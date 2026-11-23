@@ -1,0 +1,4255 @@
+import { audio } from './audio';
+import { vibrateDamage, vibrateGameOver, vibrateHit, vibrateSpecial } from './haptics';
+import {
+  ALLOWED_BADGE_IDS,
+  BADGE_META,
+  loadAchievementProgress,
+  recordDefeatedEnemyMilestone,
+  recordHighestLineMilestone,
+  recordRushWaveMilestone,
+  unlockPersistentAchievement,
+} from './badges';
+import {
+  AISLE_MAX_Y,
+  AISLE_MIN_Y,
+  BUS_LINES,
+  GRAVITY,
+  INTERNAL_HEIGHT,
+  INTERNAL_WIDTH,
+  LINE_DIFFICULTY,
+  RENDER_SCALE,
+} from './levels';
+import { DitherPostProcessor } from './postProcessShader';
+import { findBusSeatAtX, SeatSlotInfo } from './seats';
+import { getActiveShopLoadout, loadCampaignBestScore, loadInfiniteRecord } from './shop';
+import {
+  drawBossFinisherEffect,
+  drawFullScreenKoAnimation,
+  drawImpactFlash,
+  drawPixelParticle,
+  drawVectorBusInterior,
+  drawVectorDropItem,
+  drawVectorEnemy,
+  drawVectorForegroundPoles,
+  drawVectorPlayer,
+} from './vectorArt';
+import {
+  AchievementBadgeId,
+  AchievementUnlockNotice,
+  BossHudInfo,
+  CombatLogEntry,
+  DropItem,
+  EnemyEntity,
+  EnemyType,
+  FloatingText,
+  GameMode,
+  GameState,
+  GroundHazard,
+  HudSnapshot,
+  ItemType,
+  LineDefinition,
+  Particle,
+  PlayerEntity,
+  Projectile,
+  ScreenNotification,
+  ScreenNotificationTone,
+  WaveZone,
+} from './types';
+
+export type ActionKey = 'punch' | 'kick' | 'jump' | 'special' | 'use' | 'bagGuard';
+
+interface BossFinisherEffect {
+  x: number;
+  y: number;
+  z: number;
+  life: number;
+  maxLife: number;
+  label: string;
+  primaryColor: string;
+  secondaryColor: string;
+  style: 'turnstile' | 'armor' | 'tickets';
+}
+
+interface ImpactFlash {
+  x: number;
+  y: number;
+  life: number;
+  maxLife: number;
+  strong: boolean;
+}
+
+export class BusBeatEmUpEngine {
+  private canvas: HTMLCanvasElement;
+  private postProcessor: DitherPostProcessor;
+  private ctx: CanvasRenderingContext2D;
+  private onHudUpdate: (snapshot: HudSnapshot) => void;
+
+  private rafId: number | null = null;
+  private lastTime = 0;
+  private simTime = 0;
+
+  private gameMode: GameMode = 'campaign';
+  private gameState: GameState = 'TITLE_MENU';
+  private introTimer = 0;
+
+  private infiniteWave = 1;
+  private infiniteTimeLeft = 75;
+  private infiniteThemeLineIdx = 0;
+
+  private currentLineIdx = 0;
+  private line: LineDefinition = BUS_LINES[0];
+
+  private player!: PlayerEntity;
+  private enemies: EnemyEntity[] = [];
+  private drops: DropItem[] = [];
+  private projectiles: Projectile[] = [];
+  private soundRingHits = new Map<number, Set<number>>();
+  private hazards: GroundHazard[] = [];
+  private particles: Particle[] = [];
+  private floatingTexts: FloatingText[] = [];
+  private waves: WaveZone[] = [];
+
+  private nextId = 1;
+  private camX = 0;
+  private shakeTimer = 0;
+  private shakeMag = 0;
+  private comboTintTimer = 0;
+  private comboFlickerTimer = 0;
+  private comboFlickerIntensity = 0;
+  private hitstopTimer = 0;
+  private bossBulletTimeTimer = 0;
+  private bossKoFlashTimer = 0;
+  private bossKoTrailTimer = 0;
+  private runElapsedSeconds = 0;
+  private caneHintTimer = 0;
+  private shieldBreakHintTimer = 0;
+  private bossFinisherEffects: BossFinisherEffect[] = [];
+  private impactFlashes: ImpactFlash[] = [];
+  private bossKoOverlay: {
+    life: number;
+    maxLife: number;
+    primaryColor: string;
+    secondaryColor: string;
+    style: 'turnstile' | 'armor' | 'tickets';
+  } | null = null;
+
+  private ticketValidated = false;
+  private fiscalChasing = false;
+  private turnstileCleared = false;
+  private turnstileCrossed = false;
+  private turnstileSpinTimer = 0;
+  private stopButtonCooldown = 0;
+  private shortCircuitTimer = 0;
+  private graffitiSeed = 1;
+  private shopLoadout = getActiveShopLoadout();
+  private alertMessage = '';
+  private alertTimer = 0;
+  private deodorantBackupTimer = 0;
+  private hudSyncTimer = 0;
+  private bufferedAction: ActionKey | null = null;
+  private bufferTimer = 0;
+  private screenNotifications: (ScreenNotification & { life: number })[] = [];
+  private nextNotificationId = 1;
+  private combatLog: (CombatLogEntry & { ttl: number })[] = [];
+  private nextCombatLogId = 1;
+  private wasNearEmptySeatLog = false;
+  private wasNearValidatorLog = false;
+  private wasFiscalLogTriggered = false;
+  private highScoreTarget = 0;
+  private newHighScoreAnnounced = false;
+  private perfectTimingCooldown = 0;
+  private hitChainTimer = 0;
+
+  private busEventCooldown = 14;
+  private busEventState:
+    | 'none'
+    | 'brake_warn'
+    | 'bump_warn'
+    | 'curve_warn'
+    | 'window_vendor_warn'
+    | 'express_surge_warn'
+    | 'door_crowd_warn'
+    | 'short_circuit_warn' = 'none';
+  private busEventWarnTimer = 0;
+  private busEventStep = 0;
+  private busSlideVx = 0;
+  private busCurveVy = 0;
+  private expressWindTimer = 0;
+
+  private usedSeatSlots = new Set<number>();
+  private seatRestHoldTimer = 0;
+  private transitionPerksBought = new Set<string>();
+
+  private runBadges = new Set<AchievementBadgeId>();
+  private achievementQueue: AchievementUnlockNotice[] = [];
+  private activeAchievementToast: AchievementUnlockNotice | null = null;
+  private achievementToastTimer = 0;
+  private achievementToastSeq = 1;
+  private bagParryCount = 0;
+  private railSpinKoCount = 0;
+  private damageTakenThisLine = false;
+  private skippedValidationAnyLine = false;
+
+  private heldKeys = new Set<string>();
+  private virtualMove = { x: 0, y: 0 };
+
+  constructor(canvas: HTMLCanvasElement, onHudUpdate: (snapshot: HudSnapshot) => void) {
+    this.canvas = canvas;
+    this.postProcessor = new DitherPostProcessor(
+      canvas,
+      INTERNAL_WIDTH,
+      INTERNAL_HEIGHT,
+      RENDER_SCALE
+    );
+    this.ctx = this.postProcessor.getSceneContext();
+    this.onHudUpdate = onHudUpdate;
+
+    this.resetPlayer();
+    this.loadLine(0, true);
+    this.bindEvents();
+  }
+
+  private handleKeyDown = (e: KeyboardEvent) => {
+    const code = e.code;
+    if (
+      code === 'Space' ||
+      code === 'ArrowUp' ||
+      code === 'ArrowDown' ||
+      code === 'ArrowLeft' ||
+      code === 'ArrowRight'
+    ) {
+      e.preventDefault();
+    }
+
+    if (this.gameState === 'INTRO_SCENE') {
+      if (code === 'Enter' || code === 'Escape') {
+        this.skipIntro();
+      }
+      return;
+    }
+
+    if (this.gameState === 'VICTORY_SCENE') {
+      if (code === 'Enter' || code === 'Escape') {
+        this.completeVictoryScene();
+      }
+      return;
+    }
+
+    if (code === 'Escape' || code === 'KeyP') {
+      if (this.gameState === 'PLAYING') {
+        this.setPaused(true);
+      } else if (this.gameState === 'PAUSED') {
+        this.setPaused(false);
+      }
+      return;
+    }
+
+    if (this.gameState !== 'PLAYING') return;
+
+    const wasHeld = this.heldKeys.has(code);
+    this.heldKeys.add(code);
+
+    if (!wasHeld) {
+      if (code === 'KeyJ' || code === 'KeyZ') this.triggerAction('punch');
+      else if (code === 'KeyK' || code === 'KeyX') this.triggerAction('kick');
+      else if (code === 'Space') this.triggerAction('jump');
+      else if (code === 'KeyL' || code === 'KeyC') this.triggerAction('special');
+      else if (code === 'KeyE' || code === 'KeyU') this.triggerAction('use');
+      else if (code === 'KeyQ' || code === 'ShiftLeft' || code === 'ShiftRight') {
+        this.triggerAction('bagGuard');
+      }
+    }
+  };
+
+  private handleKeyUp = (e: KeyboardEvent) => {
+    this.heldKeys.delete(e.code);
+  };
+
+  private handleBlur = () => {
+    this.heldKeys.clear();
+    this.virtualMove = { x: 0, y: 0 };
+  };
+
+  private bindEvents() {
+    window.addEventListener('keydown', this.handleKeyDown);
+    window.addEventListener('keyup', this.handleKeyUp);
+    window.addEventListener('blur', this.handleBlur);
+  }
+
+  public destroy() {
+    if (this.rafId !== null) {
+      cancelAnimationFrame(this.rafId);
+      this.rafId = null;
+    }
+    window.removeEventListener('keydown', this.handleKeyDown);
+    window.removeEventListener('keyup', this.handleKeyUp);
+    window.removeEventListener('blur', this.handleBlur);
+    this.postProcessor.destroy();
+  }
+
+  public startLoop() {
+    this.lastTime = performance.now();
+    const tick = (now: number) => {
+      const rawDt = (now - this.lastTime) / 1000;
+      this.lastTime = now;
+      const dt = Math.min(rawDt, 0.05);
+
+      this.update(dt);
+      this.render();
+      this.rafId = requestAnimationFrame(tick);
+    };
+    this.rafId = requestAnimationFrame(tick);
+  }
+
+  private resetPlayer() {
+    this.shopLoadout = getActiveShopLoadout();
+    const maxHp = 105 + this.shopLoadout.maxHpBonus;
+    this.player = {
+      x: 85,
+      y: 190,
+      z: 0,
+      vx: 0,
+      vy: 0,
+      vz: 0,
+      facing: 1,
+      hp: maxHp,
+      maxHp,
+      anim: 'idle',
+      animTimer: 0,
+      comboStep: 0,
+      comboResetTimer: 0,
+      attackHasHit: false,
+      invulnTimer: 0,
+      hitFlashTimer: 0,
+      stickySlowTimer: 0,
+      caneCharges: this.shopLoadout.startingCane,
+      deodorantCount: this.shopLoadout.startingDeodorant,
+      credits: this.shopLoadout.startingCredits,
+      makeupShieldTimer: 0,
+      shieldHits: 0,
+      bagSkillCooldown: 0,
+      strengthBuffTimer: 0,
+      rageTimer: 0,
+      rageNotificationTimer: 0,
+      specialEnergy: this.shopLoadout.startingEnergy,
+      speedBoostTimer: this.shopLoadout.startingSpeedBonus,
+      score: 0,
+      hitsLanded: 0,
+      bestHitChain: 0,
+      enemiesDefeated: 0,
+      comboStreak: 0,
+      comboMultiplier: 1,
+      headphoneWhipUsed: false,
+    };
+  }
+
+  public refreshShopLoadout() {
+    this.shopLoadout = getActiveShopLoadout();
+    this.pushHudSnapshot();
+  }
+
+  private loadLine(idx: number, fullReset: boolean) {
+    this.currentLineIdx = idx;
+    this.line = BUS_LINES[idx];
+    this.enemies = [];
+    this.drops = [];
+    this.projectiles = [];
+    this.soundRingHits.clear();
+    this.hazards = [];
+    this.particles = [];
+    this.floatingTexts = [];
+    this.bossFinisherEffects = [];
+    this.impactFlashes = [];
+    this.bossKoOverlay = null;
+    this.camX = 0;
+    this.comboTintTimer = 0;
+    this.comboFlickerTimer = 0;
+    this.comboFlickerIntensity = 0;
+    this.bossBulletTimeTimer = 0;
+    this.bossKoFlashTimer = 0;
+    this.bossKoTrailTimer = 0;
+    if (fullReset) {
+      this.runElapsedSeconds = 0;
+      this.caneHintTimer = 0;
+      this.shieldBreakHintTimer = 0;
+      this.player.headphoneWhipUsed = false;
+    }
+    this.player.hitsLanded = 0;
+    this.hitChainTimer = 0;
+    this.ticketValidated = false;
+    this.turnstileCleared = false;
+    this.turnstileCrossed = false;
+    this.turnstileSpinTimer = 0;
+    this.stopButtonCooldown = 0;
+    this.shortCircuitTimer = 0;
+    this.graffitiSeed = Math.floor(Math.random() * 900000) + 1000;
+    this.deodorantBackupTimer = 0;
+    this.busEventCooldown = 12;
+    this.busEventState = 'none';
+    this.busEventWarnTimer = 0;
+    this.busEventStep = 0;
+    this.busSlideVx = 0;
+    this.busCurveVy = 0;
+    this.expressWindTimer = 0;
+    this.usedSeatSlots.clear();
+    this.seatRestHoldTimer = 0;
+    this.damageTakenThisLine = false;
+    this.wasNearEmptySeatLog = false;
+    this.wasNearValidatorLog = false;
+    this.wasFiscalLogTriggered = false;
+
+    this.waves =
+      this.gameMode === 'infinite'
+        ? []
+        : this.line.waves.map((w) => ({
+            ...w,
+            triggered: false,
+            cleared: false,
+          }));
+
+    this.player.x = this.fiscalChasing ? 128 : 85;
+    this.player.y = 190;
+    this.player.z = 0;
+    this.player.vx = 0;
+    this.player.vy = 0;
+    this.player.vz = 0;
+    this.player.facing = 1;
+    this.player.anim = 'idle';
+    this.player.animTimer = 0;
+    this.player.stickySlowTimer = 0;
+    this.player.bagSkillCooldown = 0;
+
+    if (fullReset) {
+      this.fiscalChasing = false;
+      this.player.x = 85;
+      this.player.rageTimer = 0;
+      this.player.rageNotificationTimer = 0;
+      this.runBadges.clear();
+      this.achievementQueue = [];
+      this.activeAchievementToast = null;
+      this.achievementToastTimer = 0;
+      this.bagParryCount = 0;
+      this.railSpinKoCount = 0;
+      this.transitionPerksBought.clear();
+      this.skippedValidationAnyLine = false;
+    } else {
+      this.player.hp = Math.min(this.player.maxHp, this.player.hp + 20);
+    }
+
+    recordHighestLineMilestone(this.line.lineNumber);
+    if (this.line.lineNumber >= 3) {
+      this.unlockAchievement('chegar_linha_3');
+    }
+
+    if (this.gameMode === 'infinite') {
+      this.showAlert(`HORA DO RUSH · ONDA 1`, 2.2);
+    } else if (this.fiscalChasing) {
+      this.showAlert('FISCAL ATRÁS DE VOCÊ!', 2.8);
+      audio.playWhistle();
+      const fiscal = this.spawnEnemy('fiscal', 24, 192, true);
+      fiscal.facing = 1;
+      fiscal.speechText = 'CADÊ O BILHETE?!';
+      fiscal.speechTimer = 2.6;
+      this.wasFiscalLogTriggered = true;
+      this.pushCombatLog('Fiscal se aproximando!', 'rose', 5.2);
+    }
+
+    this.pushHudSnapshot();
+  }
+
+  public startNewGame(mode: GameMode = 'campaign') {
+    this.gameMode = mode;
+    this.infiniteWave = 1;
+    this.infiniteTimeLeft = 75;
+    this.infiniteThemeLineIdx = 0;
+    this.screenNotifications = [];
+    this.combatLog = [];
+    this.perfectTimingCooldown = 0;
+    this.hitChainTimer = 0;
+    this.newHighScoreAnnounced = false;
+    this.highScoreTarget =
+      mode === 'infinite' ? loadInfiniteRecord().bestScore : loadCampaignBestScore();
+    this.heldKeys.clear();
+    this.resetPlayer();
+    this.loadLine(0, true);
+    this.introTimer = 0;
+    if (mode === 'infinite') {
+      this.gameState = 'PLAYING';
+      this.spawnInfiniteWave(1);
+    } else {
+      this.gameState = 'INTRO_SCENE';
+    }
+    this.pushHudSnapshot();
+  }
+
+  public skipIntro() {
+    if (this.gameState !== 'INTRO_SCENE') return;
+    this.heldKeys.clear();
+    this.gameState = 'PLAYING';
+    this.showAlert(this.line.title.toUpperCase(), 2.2);
+    this.pushHudSnapshot();
+  }
+
+  public completeVictoryScene() {
+    if (this.gameState !== 'VICTORY_SCENE') return;
+    this.heldKeys.clear();
+    this.gameState = 'VICTORY';
+    this.pushHudSnapshot();
+  }
+
+  public continueToNextLine() {
+    if (this.currentLineIdx < BUS_LINES.length - 1) {
+      this.loadLine(this.currentLineIdx + 1, false);
+      this.gameState = 'PLAYING';
+      this.pushHudSnapshot();
+    }
+  }
+
+  public buyTransitPerk(perk: 'coffee' | 'deodorant' | 'shield') {
+    if (this.gameState !== 'LINE_TRANSITION') return;
+    if (this.transitionPerksBought.has(perk)) return;
+
+    const p = this.player;
+    const cost = perk === 'coffee' ? 1 : 2;
+    if (p.credits < cost) return;
+
+    if (perk === 'coffee') {
+      p.credits -= cost;
+      p.hp = Math.min(p.maxHp, p.hp + 30);
+      audio.playHeal();
+    } else if (perk === 'deodorant') {
+      if (p.deodorantCount >= 4) return;
+      p.credits -= cost;
+      p.deodorantCount = Math.min(4, p.deodorantCount + 1);
+      audio.playPickup();
+    } else if (perk === 'shield') {
+      p.credits -= cost;
+      p.makeupShieldTimer = Math.max(p.makeupShieldTimer, 15 + this.shopLoadout.buffDurationBonus);
+      p.shieldHits = 5;
+      audio.playMakeup();
+    }
+
+    this.transitionPerksBought.add(perk);
+    this.pushHudSnapshot();
+  }
+
+  public setPaused(paused: boolean) {
+    if (paused && this.gameState === 'PLAYING') {
+      this.gameState = 'PAUSED';
+      this.heldKeys.clear();
+      this.pushHudSnapshot();
+    } else if (!paused && this.gameState === 'PAUSED') {
+      this.gameState = 'PLAYING';
+      this.pushHudSnapshot();
+    }
+  }
+
+  public returnToTitle() {
+    this.heldKeys.clear();
+    this.gameMode = 'campaign';
+    this.infiniteWave = 1;
+    this.infiniteTimeLeft = 75;
+    this.achievementQueue = [];
+    this.activeAchievementToast = null;
+    this.achievementToastTimer = 0;
+    this.resetPlayer();
+    this.loadLine(0, true);
+    this.gameState = 'TITLE_MENU';
+    this.pushHudSnapshot();
+  }
+
+  public setVirtualMove(x: number, y: number) {
+    this.virtualMove = { x, y };
+  }
+
+  public triggerAction(action: ActionKey) {
+    if (this.gameState !== 'PLAYING') return;
+
+    const p = this.player;
+    const isAttacking =
+      p.anim === 'punch1' ||
+      p.anim === 'punch2' ||
+      p.anim === 'punch3' ||
+      p.anim === 'cane' ||
+      p.anim === 'kick' ||
+      p.anim === 'kickFinisher' ||
+      p.anim === 'jumpKick' ||
+      p.anim === 'railSpin' ||
+      p.anim === 'railSlam' ||
+      p.anim === 'bagSpin' ||
+      p.anim === 'special' ||
+      p.anim === 'soundSpecial' ||
+      p.anim === 'headphoneWhip' ||
+      p.anim === 'spray';
+
+    if (p.anim === 'hurt' || p.anim === 'knockdown') {
+      return;
+    }
+    if (p.anim === 'victory') {
+      if (p.animTimer > 0.6) return;
+      p.anim = 'idle';
+      p.animTimer = 0;
+    }
+
+    if (action === 'bagGuard') {
+      if (p.anim === 'bagGuard') {
+        this.triggerBagCounterSpin(false);
+        return;
+      }
+      if (p.bagSkillCooldown > 0) {
+        this.addFloatingText(
+          `MOCHILA ${p.bagSkillCooldown.toFixed(1)}s`,
+          p.x,
+          p.y,
+          p.z + 36,
+          '#94a3b8'
+        );
+        return;
+      }
+      p.anim = 'bagGuard';
+      p.animTimer = 0.52;
+      p.bagSkillCooldown = 2.0;
+      p.attackHasHit = false;
+      this.bufferedAction = null;
+      audio.playBagGuard();
+      this.spawnParticles(p.x + p.facing * 10, p.y, p.z + 18, '#38bdf8', 8);
+      this.pushHudSnapshot();
+      return;
+    }
+
+    if (action === 'use') {
+      if (this.tryValidateTicket()) return;
+      if (this.tryActivateStopButton()) return;
+      if (p.deodorantCount > 0 && !isAttacking) {
+        this.performSpray();
+        return;
+      }
+      if (p.deodorantCount === 0 && !this.isNearValidator() && !this.isNearStopButton()) {
+        this.addFloatingText('SEM DESODORANTE!', p.x, p.y, p.z + 36, '#94a3b8');
+      }
+      return;
+    }
+
+    if (action === 'jump') {
+      const standingOnSeat = Boolean(this.getEmptySeatUnderPlayer(156) && Math.abs(p.z - 24) <= 2);
+      if ((p.z === 0 || standingOnSeat) && !isAttacking) {
+        p.vz = 265;
+        p.anim = 'jump';
+        p.animTimer = 0;
+        this.seatRestHoldTimer = 0;
+        audio.playJump();
+      } else if (p.z > 10 && p.anim !== 'railGrab' && p.anim !== 'railSpin' && !isAttacking) {
+        // Grab onto the yellow strap hanging from the horizontal overhead bar!
+        p.anim = 'railGrab';
+        p.animTimer = 0.7;
+        p.z = Math.max(p.z, Math.min(62, Math.max(36, p.y - 138)));
+        p.vz = 0;
+        p.invulnTimer = Math.max(p.invulnTimer, 0.35);
+        audio.playRailGrab();
+        this.spawnParticles(p.x, p.y, p.z + 24, '#facc15', 8);
+      }
+      return;
+    }
+
+    const hasPowerBuff = p.strengthBuffTimer > 0 || p.rageTimer > 0;
+    if (
+      hasPowerBuff &&
+      !isAttacking &&
+      ((p.anim === 'railGrab' &&
+        (action === 'kick' ||
+          action === 'special' ||
+          (action === 'punch' &&
+            (this.heldKeys.has('KeyS') || this.heldKeys.has('ArrowDown'))))) ||
+        (p.z > 12 && p.anim !== 'railGrab' && action === 'special'))
+    ) {
+      this.triggerRailSlam();
+      return;
+    }
+
+    if (action === 'special') {
+      if (p.specialEnergy >= 100 && !isAttacking) {
+        p.specialEnergy = 0;
+        p.anim = 'soundSpecial';
+        p.animTimer = 0.42;
+        p.attackHasHit = false;
+        p.invulnTimer = 0.48;
+        audio.playSoundWave();
+        vibrateSpecial('sound');
+        this.triggerShake(0.28, 5);
+        this.spawnParticles(p.x, p.y, p.z + 18, '#38bdf8', 18);
+        this.spawnParticles(p.x, p.y, p.z + 18, '#facc15', 12);
+        this.addFloatingText('EXPLOSÃO SONORA!', p.x, p.y, p.z + 48, '#38bdf8');
+        const ringRadius = Math.round(36 * (1 + this.shopLoadout.specialReachBonus));
+        for (const dir of [-1, 1] as const) {
+          this.projectiles.push({
+            id: this.nextId++,
+            kind: 'sound_ring',
+            fromPlayer: true,
+            x: p.x + dir * 16,
+            y: p.y,
+            z: p.z + 18,
+            vx: dir * 210,
+            vy: 0,
+            vz: 0,
+            damage: Math.round(20 * (1 + this.shopLoadout.damageMultBonus)),
+            life: 0.72,
+            radius: ringRadius,
+          });
+        }
+        this.pushHudSnapshot();
+      } else if (p.hp > 10 && !isAttacking) {
+        p.hp = Math.max(1, p.hp - 8);
+        this.resetComboStreak(true);
+        p.anim = 'special';
+        p.animTimer = 0.46;
+        p.attackHasHit = false;
+        p.invulnTimer = 0.48;
+        if (p.z === 0) {
+          p.z = 6;
+          p.vz = 155;
+        } else {
+          p.vz = Math.max(p.vz, 65);
+        }
+        audio.playSpecial();
+        vibrateSpecial('health');
+        this.spawnParticles(p.x, p.y, p.z + 16, '#facc15', 14);
+        this.pushHudSnapshot();
+      }
+      return;
+    }
+
+    if (p.anim === 'bagGuard' && (action === 'kick' || action === 'punch')) {
+      this.triggerBagCounterSpin(false);
+      return;
+    }
+
+    if (p.anim === 'railGrab' && (action === 'kick' || action === 'punch')) {
+      p.anim = 'railSpin';
+      p.animTimer = 0.38;
+      p.attackHasHit = false;
+      p.invulnTimer = Math.max(p.invulnTimer, 0.35);
+      audio.playKick();
+      vibrateSpecial('bagSpin');
+      this.spawnParticles(p.x, p.y, p.z + 12, '#38bdf8', 12);
+      return;
+    }
+
+    if (p.z > 0 && (action === 'kick' || action === 'punch')) {
+      if (p.anim !== 'jumpKick' && p.anim !== 'railSpin') {
+        p.anim = 'jumpKick';
+        p.animTimer = 0.36;
+        p.attackHasHit = false;
+        audio.playKick();
+        if (this.hasNearbyActiveBoss(195)) {
+          this.bossBulletTimeTimer = Math.max(this.bossBulletTimeTimer, 0.56);
+          p.vz = Math.max(p.vz, 58);
+        }
+      }
+      return;
+    }
+
+    if (isAttacking) {
+      this.bufferedAction = action;
+      this.bufferTimer = 0.22;
+      return;
+    }
+
+    this.executeGroundAttack(action);
+  }
+
+  private triggerBagCounterSpin(fromParry: boolean) {
+    const p = this.player;
+    p.anim = 'bagSpin';
+    p.animTimer = 0.36;
+    p.attackHasHit = false;
+    p.invulnTimer = Math.max(p.invulnTimer, 0.44);
+    if (fromParry) {
+      p.bagSkillCooldown = Math.min(p.bagSkillCooldown, 0.9);
+      p.specialEnergy = Math.min(100, p.specialEnergy + 16);
+      p.score += 100;
+      this.bagParryCount++;
+      audio.playBlock();
+      this.spawnHitSparks(p.x + p.facing * 10, p.y, p.z + 20, p.facing, {
+        target: 'barrier',
+        strong: true,
+        blocked: true,
+      });
+      this.addFloatingText('CONTRA-ATAQUE! +100', p.x, p.y, p.z + 46, '#facc15');
+      this.pushScreenNotification('Perfect Timing!', 'cyan', p.x, p.y, p.z + 58);
+      this.pushCombatLog('Contra-ataque perfeito!', 'cyan', 4.0);
+      if (this.bagParryCount >= 3) {
+        this.unlockAchievement('ninja_mochila');
+      }
+    }
+    audio.playBagSpin();
+    vibrateSpecial('bagSpin');
+    this.spawnParticles(p.x, p.y, p.z + 16, '#38bdf8', 14);
+    this.pushHudSnapshot();
+  }
+
+  private triggerRailSlam() {
+    const p = this.player;
+    p.anim = 'railSlam';
+    p.animTimer = 0.55;
+    p.z = Math.max(p.z, 46);
+    p.vz = -430;
+    p.attackHasHit = false;
+    p.invulnTimer = Math.max(p.invulnTimer, 0.55);
+    this.bufferedAction = null;
+    audio.playSpecial();
+    vibrateSpecial('slam');
+    this.spawnParticles(p.x, p.y, p.z + 18, p.rageTimer > 0 ? '#ef4444' : '#facc15', 10);
+  }
+
+  private resolveRailSlamImpact() {
+    const p = this.player;
+    p.attackHasHit = true;
+
+    const strMult = p.strengthBuffTimer > 0 ? 2 : 1;
+    const rageMult = p.rageTimer > 0 ? 1.5 : 1;
+    const shopDamageMult = 1 + this.shopLoadout.damageMultBonus;
+    const damage = Math.round(28 * strMult * rageMult * shopDamageMult);
+    const reachX = 96;
+    const laneTol = 46;
+
+    audio.playBusBump();
+    audio.playHeavyHit();
+    vibrateSpecial('slam');
+    this.hitstopTimer = 0.065;
+    this.triggerShake(0.26, 6);
+
+    this.impactFlashes.push({
+      x: p.x,
+      y: p.y - 6,
+      life: 0.22,
+      maxLife: 0.22,
+      strong: true,
+    });
+    this.spawnParticles(p.x, p.y, 6, '#fde047', 12);
+    this.spawnParticles(p.x, p.y, 8, p.rageTimer > 0 ? '#ef4444' : '#f97316', 10);
+    this.spawnHitSparks(p.x, p.y, 6, p.facing, {
+      target: 'turnstile_boss',
+      strong: true,
+      finisher: true,
+    });
+
+    let hitCount = 0;
+    for (const e of this.enemies) {
+      if (e.hp <= 0) continue;
+      const dx = e.x - p.x;
+      const dy = Math.abs(e.y - p.y);
+      if (Math.abs(dx) > reachX || dy > laneTol) continue;
+
+      if (e.type === 'industria' && e.stinkActive) {
+        e.stinkActive = false;
+        this.addFloatingText('ODOR DISSIPADO!', e.x, e.y, e.z + 44, '#67e8f9');
+      }
+
+      e.hp -= damage;
+      e.hitFlashTimer = 0.18;
+      e.aiState = 'hurt';
+      e.stateTimer = 0.52;
+      const kbDir = dx >= 0 ? 1 : -1;
+      e.vx = kbDir * 185;
+      e.vz = e.isBoss ? 110 : 165;
+      e.z = Math.max(e.z, 2);
+      hitCount++;
+
+      this.impactFlashes.push({
+        x: e.x,
+        y: e.y - e.z - 22,
+        life: 0.16,
+        maxLife: 0.16,
+        strong: true,
+      });
+      this.spawnHitSparks(e.x - kbDir * 4, e.y, e.z + 20, kbDir, {
+        target: e.isBoss ? 'turnstile_boss' : 'passenger',
+        bossType: e.type,
+        strong: true,
+        finisher: true,
+      });
+      this.addFloatingText(`-${damage}`, e.x, e.y, e.z + 36, '#fde047');
+      p.score += damage * 3;
+
+      if (e.hp <= 0) {
+        this.handleEnemyDefeated(e);
+      } else {
+        this.checkBossHalfHpTaunt(e);
+      }
+    }
+
+    if (hitCount > 0) {
+      this.registerHitChain(hitCount);
+      p.specialEnergy = Math.min(100, p.specialEnergy + 14);
+      this.comboFlickerIntensity = 1;
+      this.comboFlickerTimer = Math.max(this.comboFlickerTimer, 1.0);
+      if (hitCount >= 2 && this.perfectTimingCooldown <= 0) {
+        this.perfectTimingCooldown = 2.2;
+        this.pushScreenNotification('Perfect Timing!', 'cyan', p.x, p.y, 56);
+      }
+    }
+    this.pushHudSnapshot();
+  }
+
+  private executeGroundAttack(action: ActionKey) {
+    const p = this.player;
+    if (action === 'punch') {
+      if (p.comboMultiplier >= 7 && !p.headphoneWhipUsed) {
+        p.headphoneWhipUsed = true;
+        p.anim = 'headphoneWhip';
+        p.animTimer = 0.38;
+        p.attackHasHit = false;
+        audio.playRockWhip();
+        this.spawnParticles(p.x + p.facing * 24, p.y, p.z + 24, '#fde047', 4);
+        this.addFloatingText('CHICOTE DE FONE!', p.x, p.y, p.z + 44, '#fde047');
+        this.pushHudSnapshot();
+      } else if (p.caneCharges > 0) {
+        p.anim = 'cane';
+        p.animTimer = 0.26;
+        p.attackHasHit = false;
+        audio.playCaneHit();
+      } else {
+        if (p.comboResetTimer > 0) {
+          p.comboStep = ((p.comboStep + 1) % 3) as 0 | 1 | 2;
+        } else {
+          p.comboStep = 0;
+        }
+        p.anim = p.comboStep === 0 ? 'punch1' : p.comboStep === 1 ? 'punch2' : 'punch3';
+        p.animTimer = p.comboStep === 2 ? 0.28 : 0.2;
+        p.comboResetTimer = p.comboStep === 2 ? 0 : 0.48;
+        p.attackHasHit = false;
+        audio.playPunch();
+      }
+    } else if (action === 'kick') {
+      if (p.comboResetTimer > 0) {
+        p.anim = 'kickFinisher';
+        p.animTimer = 0.34;
+        p.comboResetTimer = 0;
+        p.attackHasHit = false;
+        audio.playKick();
+      } else {
+        p.anim = 'kick';
+        p.animTimer = 0.26;
+        p.attackHasHit = false;
+        audio.playKick();
+      }
+    }
+  }
+
+  private getEffectiveTicketCost(): number {
+    return Math.max(1, this.line.ticketCost - this.shopLoadout.ticketDiscount);
+  }
+
+  private isNearValidator(): boolean {
+    return (
+      !this.ticketValidated &&
+      Math.abs(this.player.x - this.line.validatorX) < 44
+    );
+  }
+
+  private tryValidateTicket(): boolean {
+    if (!this.isNearValidator()) return false;
+    const p = this.player;
+    const cost = this.getEffectiveTicketCost();
+    if (p.credits >= cost) {
+      p.credits -= cost;
+      this.ticketValidated = true;
+      p.score += 300;
+      p.specialEnergy = Math.min(100, p.specialEnergy + 18);
+      audio.playValidate();
+      this.spawnParticles(this.line.validatorX, 155, 25, '#10b981', 16);
+      this.addFloatingText('BILHETE VALIDADO! +300', p.x, p.y, p.z + 42, '#34d399');
+      this.pushCombatLog('Bilhete Validado (+300)', 'emerald', 4.5);
+      if (!this.damageTakenThisLine) {
+        this.unlockAchievement('validar_sem_dano');
+      }
+      this.pushHudSnapshot();
+      return true;
+    } else {
+      audio.playBlock();
+      this.addFloatingText(
+        `FALTA CRÉDITO (${p.credits}/${cost})`,
+        p.x,
+        p.y,
+        p.z + 42,
+        '#fbbf24'
+      );
+      this.pushCombatLog(`Falta crédito (${p.credits}/${cost})`, 'gold', 3.8);
+      return true;
+    }
+  }
+
+  private isNearStopButton(): boolean {
+    return this.stopButtonCooldown <= 0 && Math.abs(this.player.x - this.line.stopCordX) < 40;
+  }
+
+  private tryActivateStopButton(): boolean {
+    if (!this.isNearStopButton()) return false;
+    const p = this.player;
+    this.stopButtonCooldown = 16;
+    audio.playStopBell();
+    audio.playBusBrake();
+    this.triggerShake(0.38, 6);
+    this.spawnParticles(this.line.stopCordX, 150, 26, '#ef4444', 14);
+    this.addFloatingText('SINAL STOP!', p.x, p.y, p.z + 44, '#fde047');
+    let hit = 0;
+    for (const e of this.enemies) {
+      if (e.hp <= 0) continue;
+      if (Math.abs(e.x - this.line.stopCordX) < 200) {
+        e.hp -= 12;
+        e.hitFlashTimer = 0.18;
+        e.aiState = 'hurt';
+        e.stateTimer = 0.72;
+        e.vx = -170;
+        hit++;
+        this.spawnHitSparks(e.x, e.y, e.z + 18, -1, {
+          target: e.isBoss ? 'turnstile_boss' : 'passenger',
+          strong: true,
+        });
+        this.addFloatingText('-12', e.x, e.y, e.z + 36, '#fde047');
+        p.score += 40;
+        if (e.hp <= 0) {
+          this.handleEnemyDefeated(e);
+        } else {
+          this.checkBossHalfHpTaunt(e);
+        }
+      }
+    }
+    if (hit > 0) {
+      this.registerHitChain(hit);
+      p.specialEnergy = Math.min(100, p.specialEnergy + 12);
+      this.pushCombatLog(`Sinal STOP! (${hit} atingidos)`, 'gold', 4.2);
+    } else {
+      this.pushCombatLog('Sinal STOP acionado', 'gold', 3.8);
+    }
+    this.pushHudSnapshot();
+    return true;
+  }
+
+  private performSpray() {
+    const p = this.player;
+    p.deodorantCount = Math.max(0, p.deodorantCount - 1);
+    p.anim = 'spray';
+    p.animTimer = 0.28;
+    p.attackHasHit = false;
+    audio.playSpray();
+
+    this.projectiles.push({
+      id: this.nextId++,
+      kind: 'spray_cloud',
+      fromPlayer: true,
+      x: p.x + p.facing * 20,
+      y: p.y,
+      z: p.z + 18,
+      vx: p.facing * 120,
+      vy: 0,
+      vz: 0,
+      damage: 8,
+      life: 0.45,
+      radius: 36,
+    });
+
+    for (const e of this.enemies) {
+      if (
+        e.type === 'industria' &&
+        e.stinkActive &&
+        Math.abs(e.x - p.x) < 88 &&
+        Math.abs(e.y - p.y) < 36
+      ) {
+        e.stinkActive = false;
+        e.hitFlashTimer = 0.2;
+        e.aiState = 'hurt';
+        e.stateTimer = 0.45;
+        p.score += 150;
+        this.registerHitChain(1);
+        this.spawnParticles(e.x, e.y, e.z + 20, '#38bdf8', 18);
+        this.addFloatingText('ODOR NEUTRALIZADO!', e.x, e.y, e.z + 42, '#67e8f9');
+      }
+    }
+    this.pushHudSnapshot();
+  }
+
+  private registerHitChain(count: number) {
+    if (count <= 0) return;
+    this.player.hitsLanded += count;
+    if (this.player.hitsLanded > this.player.bestHitChain) {
+      this.player.bestHitChain = this.player.hitsLanded;
+    }
+    this.hitChainTimer = 3.2;
+  }
+
+  private pushScreenNotification(
+    text: string,
+    tone: ScreenNotificationTone,
+    worldX: number,
+    worldY: number,
+    worldZ = 48
+  ) {
+    const xPct = Math.max(14, Math.min(86, ((worldX - this.camX) / INTERNAL_WIDTH) * 100));
+    const yPct = Math.max(20, Math.min(76, ((worldY - worldZ) / INTERNAL_HEIGHT) * 100));
+    this.screenNotifications.push({
+      id: this.nextNotificationId++,
+      text,
+      tone,
+      xPct,
+      yPct,
+      life: 1.45,
+    });
+    if (this.screenNotifications.length > 4) {
+      this.screenNotifications.shift();
+    }
+    this.pushHudSnapshot();
+  }
+
+  private checkNewHighScore() {
+    if (this.newHighScoreAnnounced) return;
+    const threshold = this.highScoreTarget > 0 ? this.highScoreTarget : 1000;
+    if (this.player.score > threshold) {
+      this.newHighScoreAnnounced = true;
+      this.pushScreenNotification(
+        'New High Score!',
+        'gold',
+        this.player.x,
+        this.player.y,
+        this.player.z + 60
+      );
+    }
+  }
+
+  private showAlert(msg: string, duration = 2.4) {
+    this.alertMessage = msg;
+    this.alertTimer = duration;
+  }
+
+  private unlockAchievement(id: AchievementBadgeId) {
+    this.runBadges.add(id);
+    const { unlockedNow } = unlockPersistentAchievement(id);
+    if (!unlockedNow) return;
+    const meta = BADGE_META[id];
+    const notice: AchievementUnlockNotice = {
+      uid: this.achievementToastSeq++,
+      id,
+      label: meta.label,
+      description: meta.description,
+    };
+    this.achievementQueue.push(notice);
+    if (!this.activeAchievementToast) {
+      this.activeAchievementToast = this.achievementQueue.shift() ?? null;
+      this.achievementToastTimer = 3.5;
+    }
+    audio.playPickup();
+    this.pushHudSnapshot();
+  }
+
+  private updateAchievementToast(dt: number) {
+    if (
+      this.gameState === 'TITLE_MENU' ||
+      this.gameState === 'INTRO_SCENE' ||
+      this.gameState === 'PAUSED'
+    ) {
+      return;
+    }
+    if (this.activeAchievementToast) {
+      this.achievementToastTimer -= dt;
+      if (this.achievementToastTimer <= 0) {
+        const next = this.achievementQueue.shift() ?? null;
+        this.activeAchievementToast = next;
+        this.achievementToastTimer = next ? 3.5 : 0;
+        this.pushHudSnapshot();
+      }
+    } else if (this.achievementQueue.length > 0) {
+      this.activeAchievementToast = this.achievementQueue.shift() ?? null;
+      this.achievementToastTimer = 3.5;
+      this.pushHudSnapshot();
+    }
+  }
+
+  private spawnEnemy(
+    type: EnemyType,
+    x: number,
+    y: number,
+    isChaser = false,
+    guaranteedDrop?: ItemType
+  ): EnemyEntity {
+    const diff = LINE_DIFFICULTY[this.line.lineNumber];
+    const infScale = this.gameMode === 'infinite' ? 1 + (this.infiniteWave - 1) * 0.08 : 1;
+    const hpMult = diff.hpMult * infScale;
+    const bossHpMult = diff.bossHpMult * infScale;
+    const stats: Record<
+      EnemyType,
+      { name: string; hp: number; barrier: boolean; guardMax: number; stink: boolean; boss: boolean }
+    > = {
+      idosa: { name: 'Idosa Chata', hp: Math.max(20, Math.round(44 * hpMult)), barrier: false, guardMax: 0, stink: false, boss: false },
+      vendedor: { name: 'Vendedor Ambulante', hp: Math.max(22, Math.round(48 * hpMult)), barrier: false, guardMax: 0, stink: false, boss: false },
+      estudante: { name: 'Estudante Mochilão', hp: Math.max(28, Math.round(62 * hpMult)), barrier: true, guardMax: 3, stink: false, boss: false },
+      patricinha: { name: 'Patricinha', hp: Math.max(26, Math.round(54 * hpMult)), barrier: false, guardMax: 0, stink: false, boss: false },
+      industria: { name: 'Operário Indústria', hp: Math.max(40, Math.round(80 * hpMult)), barrier: false, guardMax: 0, stink: true, boss: false },
+      fiscal: { name: 'Fiscal', hp: Math.max(50, Math.round(95 * hpMult)), barrier: false, guardMax: 0, stink: false, boss: false },
+      tio_audio: { name: 'Tio do Áudio Alto', hp: Math.max(24, Math.round(52 * hpMult)), barrier: false, guardMax: 0, stink: false, boss: false },
+      skatista: { name: 'Skatista Apressado', hp: Math.max(26, Math.round(56 * hpMult)), barrier: false, guardMax: 0, stink: false, boss: false },
+      boss_cobrador: { name: 'Cobrador da Catraca', hp: Math.round((this.currentLineIdx === 0 ? 200 : 250) * bossHpMult), barrier: false, guardMax: 0, stink: false, boss: true },
+      boss_motorista: { name: 'Motorista Furioso', hp: Math.round(210 * bossHpMult), barrier: false, guardMax: 0, stink: false, boss: true },
+      boss_cobrador_blindado: { name: 'Cobrador Blindado', hp: Math.round(320 * bossHpMult), barrier: false, guardMax: 6, stink: false, boss: true },
+      boss_fiscal_chefe: { name: 'Fiscal Chefe', hp: Math.round(230 * 0.88 * bossHpMult), barrier: false, guardMax: 0, stink: false, boss: true },
+    };
+
+    const initialSpeech: Partial<Record<EnemyType, string>> = {
+      idosa: 'Eu quero ir pra Lapa!',
+      vendedor: 'Cuidado com o rapa!',
+      estudante: 'Olha o SENAI!',
+      tio_audio: 'AUMENTA O SOM AÍ!',
+      skatista: 'SAI DA FRENTE!',
+      boss_motorista: 'DESCE PELA TRASEIRA!!',
+    };
+    const spawnSpeech = !isChaser ? initialSpeech[type] ?? '' : '';
+
+    const st = stats[type];
+    const enemy: EnemyEntity = {
+      id: this.nextId++,
+      type,
+      name: st.name,
+      x,
+      y: Math.max(AISLE_MIN_Y, Math.min(AISLE_MAX_Y, y)),
+      z: 0,
+      vx: 0,
+      vy: 0,
+      vz: 0,
+      facing: -1, // always faces left toward the approaching player
+      hp: st.hp,
+      maxHp: st.hp,
+      aiState: 'approach',
+      stateTimer: 0,
+      attackCooldown: (0.7 + Math.random() * 0.6) * diff.cooldownMult,
+      hitFlashTimer: 0,
+      hasFrontBarrier: st.barrier,
+      guardHp: st.guardMax,
+      guardMax: st.guardMax,
+      guardBrokenTimer: 0,
+      stinkActive: st.stink,
+      stinkTickTimer: 0.4,
+      isBoss: st.boss,
+      isChaser,
+      spinTickTimer: 0,
+      speechText: spawnSpeech,
+      speechTimer: spawnSpeech ? 2.6 : 0,
+      halfHpTauntTriggered: false,
+      walkPhase: Math.random() * 6,
+      guaranteedDrop,
+    };
+
+    this.enemies.push(enemy);
+    return enemy;
+  }
+
+  private spawnDrop(type: ItemType, x: number, y: number) {
+    this.drops.push({
+      id: this.nextId++,
+      type,
+      x,
+      y: Math.max(AISLE_MIN_Y + 4, Math.min(AISLE_MAX_Y - 4, y)),
+      z: 18,
+      vz: 110,
+      bobPhase: Math.random() * 4,
+      life: 24,
+    });
+  }
+
+  private pushParticle(pt: Particle) {
+    if (this.particles.length >= 240) {
+      this.particles.splice(0, this.particles.length - 239);
+    }
+    this.particles.push(pt);
+  }
+
+  private spawnParticles(x: number, y: number, z: number, color: string, count: number) {
+    for (let i = 0; i < count; i++) {
+      const ang = Math.random() * Math.PI * 2;
+      const spd = 35 + Math.random() * 90;
+      this.pushParticle({
+        x,
+        y,
+        z,
+        vx: Math.cos(ang) * spd,
+        vy: Math.sin(ang) * spd * 0.35,
+        vz: 40 + Math.random() * 110,
+        color,
+        size: Math.random() > 0.5 ? 3.5 : 2.5,
+        life: 0.35 + Math.random() * 0.25,
+        maxLife: 0.6,
+        kind: 'pixel',
+      });
+    }
+  }
+
+  private spawnHitSparks(
+    x: number,
+    y: number,
+    z: number,
+    dir: number,
+    options: {
+      target: 'passenger' | 'turnstile_boss' | 'barrier' | 'player';
+      bossType?: EnemyType;
+      strong?: boolean;
+      finisher?: boolean;
+      blocked?: boolean;
+    }
+  ) {
+    const isBoss = options.target === 'turnstile_boss';
+    const isBarrier = options.target === 'barrier';
+    const isPlayer = options.target === 'player';
+    const baseDir = dir >= 0 ? 1 : -1;
+
+    const sparkCount = isBoss
+      ? options.finisher
+        ? 20
+        : options.strong
+          ? 15
+          : 11
+      : isBarrier
+        ? 10
+        : isPlayer
+          ? 7
+          : options.finisher
+            ? 14
+            : options.strong
+              ? 10
+              : 7;
+
+    const bossPalette: Array<{ primary: string; cool: string }> =
+      options.bossType === 'boss_fiscal_chefe'
+        ? [
+            { primary: '#fde047', cool: '#ea580c' },
+            { primary: '#e2e8f0', cool: '#64748b' },
+            { primary: '#7dd3fc', cool: '#0284c7' },
+          ]
+        : [
+            { primary: '#f8fafc', cool: '#64748b' },
+            { primary: '#fde047', cool: '#f97316' },
+            { primary: '#cbd5e1', cool: '#475569' },
+            { primary: '#fb923c', cool: '#b45309' },
+          ];
+
+    const passengerPalette: Array<{ primary: string; cool: string }> = [
+      { primary: '#fde047', cool: '#ea580c' },
+      { primary: '#e2e8f0', cool: '#64748b' },
+      { primary: '#fb923c', cool: '#c2410c' },
+    ];
+
+    const barrierPalette: Array<{ primary: string; cool: string }> = [
+      { primary: '#e0f2fe', cool: '#0284c7' },
+      { primary: '#38bdf8', cool: '#1d4ed8' },
+      { primary: '#cbd5e1', cool: '#475569' },
+    ];
+
+    const playerPalette: Array<{ primary: string; cool: string }> = [
+      { primary: '#fde047', cool: '#ef4444' },
+      { primary: '#e2e8f0', cool: '#64748b' },
+      { primary: '#fb7185', cool: '#be123c' },
+    ];
+
+    const palette = isBoss
+      ? bossPalette
+      : isBarrier
+        ? barrierPalette
+        : isPlayer
+          ? playerPalette
+          : passengerPalette;
+
+    for (let i = 0; i < sparkCount; i++) {
+      // Mostly directional cone along hit knockback + 25% metallic ricochet spray
+      const ricochet = isBoss || isBarrier ? Math.random() < 0.32 : Math.random() < 0.2;
+      const aimDir = ricochet ? -baseDir : baseDir;
+      const spread = (Math.random() - 0.5) * (isBoss ? 1.55 : 1.35);
+      const baseAngle = aimDir > 0 ? spread : Math.PI + spread;
+      const speed =
+        (isBoss ? 115 : 85) +
+        Math.random() * (options.finisher || options.strong ? 135 : 95);
+      const swatch = palette[i % palette.length];
+      const maxLife =
+        (isBoss ? 0.34 : 0.26) + Math.random() * (options.finisher ? 0.2 : 0.14);
+
+      this.pushParticle({
+        x: x + (Math.random() - 0.5) * 4,
+        y: y + (Math.random() - 0.5) * 4,
+        z: Math.max(4, z + (Math.random() - 0.5) * 6),
+        vx: Math.cos(baseAngle) * speed,
+        vy: Math.sin(baseAngle) * speed * 0.28,
+        vz: (isBoss ? 70 : 50) + Math.random() * (options.strong || isBoss ? 125 : 85),
+        color: swatch.primary,
+        coolColor: swatch.cool,
+        size: isBoss || options.finisher ? (Math.random() > 0.35 ? 3 : 2.5) : 2.5,
+        life: maxLife,
+        maxLife,
+        kind: 'spark',
+        bounce: isBoss ? 0.48 : 0.38,
+        drag: 2.1,
+        gravityScale: 0.85,
+        prevX: x,
+        prevY: y,
+        prevZ: z,
+      });
+    }
+
+    // Crisp metallic pixel shards (turnstile steel, badge/buckle chips, armor flecks)
+    const shardCount = isBoss
+      ? options.finisher
+        ? 6
+        : options.strong
+          ? 4
+          : 2
+      : isBarrier
+        ? 2
+        : options.finisher || options.strong
+          ? 2
+          : 0;
+
+    for (let i = 0; i < shardCount; i++) {
+      const aimDir = Math.random() < 0.3 ? -baseDir : baseDir;
+      const spread = (Math.random() - 0.5) * 1.4;
+      const angle = aimDir > 0 ? spread : Math.PI + spread;
+      const speed = 75 + Math.random() * 115;
+      const swatch = palette[(i + 1) % palette.length];
+      const maxLife = 0.42 + Math.random() * 0.22;
+
+      this.pushParticle({
+        x,
+        y,
+        z: Math.max(4, z),
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed * 0.3,
+        vz: 85 + Math.random() * 100,
+        color: isBoss && i % 2 === 0 ? '#e2e8f0' : swatch.primary,
+        coolColor: '#475569',
+        size: isBoss ? 3 : 2.5,
+        life: maxLife,
+        maxLife,
+        kind: 'shard',
+        bounce: 0.45,
+        drag: 1.5,
+        gravityScale: 0.95,
+        prevX: x,
+        prevY: y,
+        prevZ: z,
+      });
+    }
+  }
+
+  private addFloatingText(text: string, x: number, y: number, z: number, color: string) {
+    this.floatingTexts.push({
+      text,
+      x,
+      y,
+      z,
+      color,
+      life: 0.95,
+      maxLife: 0.95,
+    });
+  }
+
+  private pushCombatLog(
+    text: string,
+    tone: ScreenNotificationTone = 'cyan',
+    ttl = 4.5
+  ) {
+    if (this.gameState !== 'PLAYING' && this.gameState !== 'INTRO_SCENE') return;
+    const last = this.combatLog[this.combatLog.length - 1];
+    if (last && last.text === text) {
+      last.ttl = Math.max(last.ttl, ttl);
+      return;
+    }
+    this.combatLog.push({
+      id: this.nextCombatLogId++,
+      text,
+      tone,
+      ttl,
+    });
+    while (this.combatLog.length > 4) {
+      this.combatLog.shift();
+    }
+    this.pushHudSnapshot();
+  }
+
+  private update(dt: number) {
+    this.simTime += dt;
+    this.updateAchievementToast(dt);
+    let hudDirty = false;
+    if (this.screenNotifications.length > 0) {
+      for (let i = this.screenNotifications.length - 1; i >= 0; i--) {
+        this.screenNotifications[i].life -= dt;
+        if (this.screenNotifications[i].life <= 0) {
+          this.screenNotifications.splice(i, 1);
+          hudDirty = true;
+        }
+      }
+    }
+    if (this.combatLog.length > 0) {
+      for (let i = this.combatLog.length - 1; i >= 0; i--) {
+        this.combatLog[i].ttl -= dt;
+        if (this.combatLog[i].ttl <= 0) {
+          this.combatLog.splice(i, 1);
+          hudDirty = true;
+        }
+      }
+    }
+    if (hudDirty) {
+      this.pushHudSnapshot();
+    }
+
+    if (this.gameState === 'INTRO_SCENE' || this.gameState === 'VICTORY_SCENE') {
+      return;
+    }
+
+    if (this.gameState === 'VICTORY') {
+      this.updateParticles(dt);
+      return;
+    }
+
+    if (this.gameState !== 'PLAYING') {
+      return;
+    }
+
+    if (this.perfectTimingCooldown > 0) {
+      this.perfectTimingCooldown = Math.max(0, this.perfectTimingCooldown - dt);
+    }
+    if (this.hitChainTimer > 0) {
+      this.hitChainTimer = Math.max(0, this.hitChainTimer - dt);
+      if (this.hitChainTimer === 0 && this.player.hitsLanded > 0) {
+        this.player.hitsLanded = 0;
+        this.pushHudSnapshot();
+      }
+    }
+    this.checkNewHighScore();
+
+    if (this.shakeTimer > 0) {
+      this.shakeTimer = Math.max(0, this.shakeTimer - dt);
+      if (this.shakeTimer === 0) {
+        this.shakeMag = 0;
+      }
+    }
+    this.runElapsedSeconds += dt;
+    if (this.caneHintTimer > 0) {
+      this.caneHintTimer = Math.max(0, this.caneHintTimer - dt);
+    }
+    if (this.shieldBreakHintTimer > 0) {
+      this.shieldBreakHintTimer = Math.max(0, this.shieldBreakHintTimer - dt);
+    }
+    if (this.comboTintTimer > 0) {
+      this.comboTintTimer = Math.max(0, this.comboTintTimer - dt);
+    }
+    if (this.comboFlickerTimer > 0) {
+      this.comboFlickerTimer = Math.max(0, this.comboFlickerTimer - dt);
+      if (this.comboFlickerTimer === 0) {
+        this.comboFlickerIntensity = 0;
+      }
+    }
+    if (this.bossKoFlashTimer > 0) {
+      this.bossKoFlashTimer = Math.max(0, this.bossKoFlashTimer - dt);
+    }
+    if (this.expressWindTimer > 0) {
+      this.expressWindTimer = Math.max(0, this.expressWindTimer - dt);
+    }
+    if (this.turnstileSpinTimer > 0) {
+      this.turnstileSpinTimer = Math.max(0, this.turnstileSpinTimer - dt);
+    }
+    if (this.stopButtonCooldown > 0) {
+      this.stopButtonCooldown = Math.max(0, this.stopButtonCooldown - dt);
+    }
+    if (this.shortCircuitTimer > 0) {
+      this.shortCircuitTimer = Math.max(0, this.shortCircuitTimer - dt);
+      if (Math.random() < dt * 16) {
+        this.spawnParticles(this.camX + 60 + Math.random() * 360, 128, 38, '#38bdf8', 2);
+      }
+    }
+    if (this.gameMode === 'infinite') {
+      this.infiniteTimeLeft = Math.max(0, this.infiniteTimeLeft - dt);
+      if (this.infiniteTimeLeft <= 0) {
+        this.gameState = 'GAME_OVER';
+        audio.playGameOver();
+        this.pushHudSnapshot();
+        return;
+      }
+    }
+    for (let i = this.bossFinisherEffects.length - 1; i >= 0; i--) {
+      this.bossFinisherEffects[i].life -= dt;
+      if (this.bossFinisherEffects[i].life <= 0) {
+        this.bossFinisherEffects.splice(i, 1);
+      }
+    }
+    for (let i = this.impactFlashes.length - 1; i >= 0; i--) {
+      this.impactFlashes[i].life -= dt;
+      if (this.impactFlashes[i].life <= 0) {
+        this.impactFlashes.splice(i, 1);
+      }
+    }
+    if (this.bossKoOverlay) {
+      this.bossKoOverlay.life -= dt;
+      if (this.bossKoOverlay.life <= 0) {
+        this.bossKoOverlay = null;
+      }
+    }
+    if (this.alertTimer > 0) {
+      this.alertTimer = Math.max(0, this.alertTimer - dt);
+      if (this.alertTimer === 0) {
+        this.alertMessage = '';
+      }
+    }
+
+    if (this.hitstopTimer > 0) {
+      this.hitstopTimer = Math.max(0, this.hitstopTimer - dt);
+      return;
+    }
+
+    let worldDt = dt;
+    if (this.bossBulletTimeTimer > 0) {
+      const decayRate = this.player.anim === 'jumpKick' || this.player.z > 4 ? 1 : 2.2;
+      this.bossBulletTimeTimer = Math.max(0, this.bossBulletTimeTimer - dt * decayRate);
+      const easeOut = this.bossBulletTimeTimer < 0.14 ? 1 - this.bossBulletTimeTimer / 0.14 : 0;
+      const slowScale = 0.28 + easeOut * 0.72;
+      worldDt = dt * slowScale;
+    }
+
+    this.updateWaves();
+    this.updateBusEvents(worldDt);
+    this.updatePlayer(worldDt);
+    this.updateEnemies(worldDt);
+    this.updateProjectiles(worldDt);
+    this.updateHazards(worldDt);
+    this.updateDrops(worldDt);
+    this.updateParticles(worldDt);
+    this.updateCamera(worldDt);
+
+    const nearValidatorNow = this.isNearValidator();
+    if (nearValidatorNow && !this.wasNearValidatorLog) {
+      this.pushCombatLog('Validador à frente (pressione E)', 'gold', 4.0);
+    }
+    this.wasNearValidatorLog = nearValidatorNow;
+
+    const nearSeatObj = this.getEmptySeatUnderPlayer(158);
+    const nearSeatNow = Boolean(
+      this.line.lineNumber === 1 && nearSeatObj && !this.usedSeatSlots.has(nearSeatObj.slot)
+    );
+    if (nearSeatNow && !this.wasNearEmptySeatLog) {
+      this.pushCombatLog('Assento Disponível (↑ p/ descansar)', 'emerald', 4.2);
+    }
+    this.wasNearEmptySeatLog = nearSeatNow;
+
+    if (this.fiscalChasing && !this.wasFiscalLogTriggered) {
+      this.wasFiscalLogTriggered = true;
+      this.pushCombatLog('Fiscal se aproximando!', 'rose', 5.2);
+    }
+
+    const hasStinkyWorker = this.enemies.some((e) => e.type === 'industria' && e.stinkActive);
+    const hasDeodorantOnFloor = this.drops.some((d) => d.type === 'desodorante');
+    if (hasStinkyWorker && this.player.deodorantCount === 0 && !hasDeodorantOnFloor) {
+      this.deodorantBackupTimer += dt;
+      if (this.deodorantBackupTimer > 7.5) {
+        this.deodorantBackupTimer = 0;
+        const dropX = Math.max(this.camX + 60, Math.min(this.camX + INTERNAL_WIDTH - 60, this.player.x + 80));
+        this.spawnDrop('desodorante', dropX, 188);
+        this.addFloatingText('DESODORANTE NA POLTRONA!', dropX, 188, 30, '#38bdf8');
+        this.pushCombatLog('Desodorante caiu na poltrona', 'cyan', 4.0);
+      }
+    } else {
+      this.deodorantBackupTimer = 0;
+    }
+
+    this.hudSyncTimer += dt;
+    if (this.hudSyncTimer >= 0.08) {
+      this.hudSyncTimer = 0;
+      this.pushHudSnapshot();
+    }
+  }
+
+  private spawnInfiniteWave(wave: number) {
+    const p = this.player;
+    const isBossWave = wave % 3 === 0;
+    const pool: EnemyType[] = [
+      'idosa',
+      'vendedor',
+      'estudante',
+      'patricinha',
+      'tio_audio',
+      'skatista',
+      ...(wave >= 2 ? (['industria'] as EnemyType[]) : []),
+    ];
+    const count = Math.min(6, 3 + Math.floor(wave / 2));
+    const maxRight = this.line.turnstileX - 30;
+    const minLeft = 40;
+
+    for (let i = 0; i < count; i++) {
+      const eType = pool[(wave * 3 + i * 2) % pool.length];
+      const spawnFromRight = i % 2 === 0 || p.x < 220;
+      const offsetX = spawnFromRight
+        ? Math.min(maxRight, Math.max(minLeft + 80, p.x + 150 + i * 28))
+        : Math.max(minLeft, Math.min(maxRight - 80, p.x - 140 - i * 24));
+      const y = 168 + ((i * 23) % 52);
+      const drop: ItemType | undefined =
+        i === count - 1 && wave % 2 === 0 ? 'cafezinho' : undefined;
+      this.spawnEnemy(eType, offsetX, y, false, drop);
+    }
+
+    if (isBossWave) {
+      const bossPool: EnemyType[] = [
+        'boss_cobrador',
+        'boss_motorista',
+        'boss_cobrador_blindado',
+        'boss_fiscal_chefe',
+      ];
+      const bossType = bossPool[Math.floor(wave / 3 - 1) % bossPool.length];
+      const bx = Math.min(maxRight, Math.max(minLeft + 120, p.x + 175));
+      this.spawnEnemy(bossType, bx, 192, false, 'bilhete_dourado');
+      this.showAlert(`HORA DO RUSH · ONDA ${wave} (CHEFE!)`, 3.0);
+      audio.playBossAlert();
+    } else {
+      this.showAlert(`HORA DO RUSH · ONDA ${wave}!`, 2.2);
+    }
+
+    recordRushWaveMilestone(wave);
+    if (wave >= 5) {
+      this.unlockAchievement('rush_onda_5');
+    }
+  }
+
+  private updateWaves() {
+    if (this.gameMode === 'infinite') {
+      const remaining = this.enemies.filter((e) => !e.isChaser);
+      if (remaining.length === 0) {
+        const wasBossWave = this.infiniteWave % 3 === 0;
+        const timeBonus = wasBossWave ? 22 : 12;
+        this.infiniteTimeLeft = Math.min(99, this.infiniteTimeLeft + timeBonus);
+        this.infiniteWave += 1;
+
+        const nextThemeIdx = Math.floor((this.infiniteWave - 1) / 2) % BUS_LINES.length;
+        if (nextThemeIdx !== this.infiniteThemeLineIdx) {
+          this.infiniteThemeLineIdx = nextThemeIdx;
+          this.currentLineIdx = nextThemeIdx;
+          this.line = BUS_LINES[nextThemeIdx];
+          this.stopButtonCooldown = 0;
+          this.usedSeatSlots.clear();
+        }
+
+        audio.playValidate();
+        this.addFloatingText(`+${timeBonus}s TEMPO!`, this.player.x, this.player.y, this.player.z + 48, '#34d399');
+        this.spawnInfiniteWave(this.infiniteWave);
+        this.pushHudSnapshot();
+      }
+      return;
+    }
+
+    for (const wave of this.waves) {
+      if (!wave.triggered && this.player.x >= wave.triggerX) {
+        wave.triggered = true;
+        if (wave.isBossWave && wave.bossBanner) {
+          this.showAlert(wave.bossBanner, 3.2);
+          audio.playBossAlert();
+          this.pushCombatLog(wave.bossBanner, 'rose', 4.8);
+        }
+        // Strictly enforce all enemies spawn ahead of the player (from the front!)
+        for (const s of wave.spawns) {
+          const spawnX = Math.min(
+            wave.lockMaxX - 24,
+            Math.max(this.player.x + 150, s.offsetX)
+          );
+          this.spawnEnemy(s.type, spawnX, s.y, false, s.guaranteedDrop);
+
+          // Double regular enemies (idosa & patricinha) while RAGE buff is active
+          if (
+            this.player.rageTimer > 0 &&
+            (s.type === 'idosa' || s.type === 'patricinha')
+          ) {
+            const cloneX = Math.min(wave.lockMaxX - 18, spawnX + 26);
+            const cloneY = s.y > 190 ? s.y - 22 : s.y + 22;
+            const clone = this.spawnEnemy(s.type, cloneX, cloneY, false);
+            clone.isRageClone = true;
+          }
+        }
+        this.pushHudSnapshot();
+      }
+      if (wave.triggered && !wave.cleared) {
+        const remainingWaveEnemies = this.enemies.filter((e) => !e.isChaser);
+        if (remainingWaveEnemies.length === 0) {
+          wave.cleared = true;
+          if (wave.isBossWave) {
+            this.turnstileCleared = true;
+            audio.playValidate();
+            this.pushCombatLog('Catraca liberada!', 'emerald', 4.8);
+          }
+          this.pushHudSnapshot();
+        }
+      }
+    }
+  }
+
+  private getActiveWaveBounds(): { minX: number; maxX: number } {
+    if (this.gameMode === 'infinite') {
+      return {
+        minX: 0,
+        maxX: this.line.turnstileX - 18,
+      };
+    }
+    const activeWave = this.waves.find((w) => w.triggered && !w.cleared);
+    if (activeWave) {
+      return { minX: activeWave.lockMinX, maxX: activeWave.lockMaxX };
+    }
+    return {
+      minX: 0,
+      maxX: this.turnstileCleared ? this.line.busLength : this.line.turnstileX - 18,
+    };
+  }
+
+  private hasNearbyActiveBoss(maxDist = 195): boolean {
+    return this.enemies.some(
+      (e) => e.isBoss && e.hp > 0 && e.aiState !== 'knockdown' && Math.abs(e.x - this.player.x) <= maxDist
+    );
+  }
+
+  private getEmptySeatUnderPlayer(maxY = 158): SeatSlotInfo | null {
+    if (this.player.y > maxY) return null;
+    const seat = findBusSeatAtX(this.line.lineNumber, this.player.x, this.line.turnstileX);
+    if (seat && !seat.occupied) return seat;
+    return null;
+  }
+
+  private updatePlayer(dt: number) {
+    const p = this.player;
+
+    if (p.invulnTimer > 0) p.invulnTimer = Math.max(0, p.invulnTimer - dt);
+    if (p.hitFlashTimer > 0) p.hitFlashTimer = Math.max(0, p.hitFlashTimer - dt);
+    if (p.stickySlowTimer > 0) p.stickySlowTimer = Math.max(0, p.stickySlowTimer - dt);
+    if (p.makeupShieldTimer > 0) {
+      p.makeupShieldTimer = Math.max(0, p.makeupShieldTimer - dt);
+      if (p.makeupShieldTimer === 0) {
+        p.shieldHits = 0;
+      }
+    }
+    if (p.strengthBuffTimer > 0) p.strengthBuffTimer = Math.max(0, p.strengthBuffTimer - dt);
+    if (p.speedBoostTimer > 0) p.speedBoostTimer = Math.max(0, p.speedBoostTimer - dt);
+    if (p.bagSkillCooldown > 0) p.bagSkillCooldown = Math.max(0, p.bagSkillCooldown - dt);
+    if (p.rageTimer > 0) p.rageTimer = Math.max(0, p.rageTimer - dt);
+    if (p.rageNotificationTimer > 0) {
+      p.rageNotificationTimer = Math.max(0, p.rageNotificationTimer - dt);
+    }
+    if (p.comboResetTimer > 0) p.comboResetTimer = Math.max(0, p.comboResetTimer - dt);
+
+    if (this.bufferTimer > 0) {
+      this.bufferTimer -= dt;
+      if (this.bufferTimer <= 0) this.bufferedAction = null;
+    }
+
+    const isAttacking =
+      p.anim === 'punch1' ||
+      p.anim === 'punch2' ||
+      p.anim === 'punch3' ||
+      p.anim === 'cane' ||
+      p.anim === 'kick' ||
+      p.anim === 'kickFinisher' ||
+      p.anim === 'jumpKick' ||
+      p.anim === 'railSpin' ||
+      p.anim === 'railSlam' ||
+      p.anim === 'bagSpin' ||
+      p.anim === 'special' ||
+      p.anim === 'soundSpecial' ||
+      p.anim === 'headphoneWhip' ||
+      p.anim === 'spray';
+
+    let ix = this.virtualMove.x;
+    let iy = this.virtualMove.y;
+    if (this.heldKeys.has('KeyA') || this.heldKeys.has('ArrowLeft')) ix -= 1;
+    if (this.heldKeys.has('KeyD') || this.heldKeys.has('ArrowRight')) ix += 1;
+    if (this.heldKeys.has('KeyW') || this.heldKeys.has('ArrowUp')) iy -= 1;
+    if (this.heldKeys.has('KeyS') || this.heldKeys.has('ArrowDown')) iy += 1;
+
+    if (ix !== 0 && iy !== 0) {
+      const norm = 1 / Math.SQRT2;
+      ix *= norm;
+      iy *= norm;
+    }
+
+    if (p.anim === 'hurt' || p.anim === 'knockdown') {
+      p.animTimer -= dt;
+      p.x += p.vx * dt;
+      p.vx *= Math.pow(0.05, dt);
+      this.seatRestHoldTimer = 0;
+      if (p.animTimer <= 0) {
+        p.anim = 'idle';
+        p.animTimer = 0;
+      }
+    } else if (p.anim === 'victory') {
+      p.animTimer -= dt;
+      p.invulnTimer = Math.max(p.invulnTimer, 0.12);
+      p.vx *= Math.pow(0.02, dt);
+      p.vy *= Math.pow(0.02, dt);
+      this.seatRestHoldTimer = 0;
+      if (Math.random() < dt * 8) {
+        this.spawnParticles(p.x + (Math.random() - 0.5) * 18, p.y, 26, '#fde047', 1);
+      }
+      if (p.animTimer <= 0 || (p.animTimer <= 0.6 && (Math.abs(ix) > 0.2 || Math.abs(iy) > 0.2))) {
+        p.anim = 'idle';
+        p.animTimer = 0;
+      }
+    } else if (p.anim === 'bagGuard') {
+      p.animTimer -= dt;
+      p.x += ix * 42 * dt;
+      p.y += iy * 28 * dt;
+      this.seatRestHoldTimer = 0;
+      if (ix > 0.1) p.facing = 1;
+      else if (ix < -0.1) p.facing = -1;
+      if (p.animTimer <= 0) {
+        p.anim = p.z > 0 ? 'jump' : 'idle';
+        p.animTimer = 0;
+      }
+    } else if (p.anim === 'railGrab') {
+      p.animTimer -= dt;
+      p.x += ix * 78 * dt;
+      p.vz = 0;
+      this.seatRestHoldTimer = 0;
+      if (p.animTimer <= 0) {
+        p.anim = 'jump';
+        p.animTimer = 0;
+        p.vz = -45;
+      }
+    } else if (isAttacking) {
+      this.seatRestHoldTimer = 0;
+      if (p.anim === 'railSlam') {
+        p.x += ix * 65 * dt;
+      } else {
+        p.animTimer -= dt;
+        if (p.anim === 'jumpKick' || p.anim === 'railSpin') {
+          p.x += ix * 95 * dt;
+        } else if (p.anim === 'special') {
+          if (p.animTimer > 0.22 && p.z >= 14) {
+            // Brief suspended hover during the Special Kick coil pose
+            p.vz = Math.max(p.vz, 24);
+          } else if (p.animTimer <= 0.22 && p.animTimer + dt > 0.22) {
+            p.x += p.facing * 6;
+            audio.playKick();
+          }
+        }
+        if (!p.attackHasHit && (p.anim !== 'special' || p.animTimer <= 0.22)) {
+          this.resolvePlayerAttack();
+        }
+        if (p.animTimer <= 0) {
+          p.anim = p.z > 0 ? 'jump' : 'idle';
+          p.animTimer = 0;
+          if (this.bufferedAction) {
+            const nextAct = this.bufferedAction;
+            this.bufferedAction = null;
+            this.executeGroundAttack(nextAct);
+          }
+        }
+      }
+    } else {
+      const nearUnusedSeat = this.getEmptySeatUnderPlayer(156);
+      const isRestingOnSeat = Boolean(
+        p.z === 0 &&
+          nearUnusedSeat &&
+          !this.usedSeatSlots.has(nearUnusedSeat.slot) &&
+          iy < -0.5 &&
+          Math.abs(ix) < 0.45 &&
+          Math.abs(this.busCurveVy) < 10
+      );
+
+      if (isRestingOnSeat && nearUnusedSeat) {
+        p.anim = 'seatRest';
+        p.animTimer += dt;
+        p.vx = 0;
+        p.vy = 0;
+        this.seatRestHoldTimer += dt;
+        if (this.seatRestHoldTimer >= 1.1) {
+          p.hp = Math.min(p.maxHp, p.hp + 18);
+          p.score += 50;
+          this.usedSeatSlots.add(nearUnusedSeat.slot);
+          this.seatRestHoldTimer = 0;
+          p.anim = 'idle';
+          audio.playHeal();
+          this.spawnParticles(p.x, p.y, 18, '#34d399', 12);
+          this.addFloatingText('DESCANSO! +18 HP', p.x, p.y, 38, '#34d399');
+          this.pushCombatLog('Descanso no assento (+18 HP)', 'emerald', 4.2);
+          this.pushHudSnapshot();
+        }
+      } else {
+        this.seatRestHoldTimer = 0;
+
+        const slowMult = p.stickySlowTimer > 0 ? 0.52 : 1;
+        const rageSpeedMult = p.rageTimer > 0 ? 1.25 : 1;
+        const coffeeSpeedMult = p.speedBoostTimer > 0 ? 1.22 : 1;
+        const speedX = 128 * slowMult * rageSpeedMult * coffeeSpeedMult;
+        const speedY = 86 * slowMult * rageSpeedMult * coffeeSpeedMult;
+        p.vx = ix * speedX + this.busSlideVx;
+        p.vy = iy * speedY + this.busCurveVy;
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+        this.busSlideVx *= Math.pow(0.03, dt);
+        if (Math.abs(this.busSlideVx) < 1) this.busSlideVx = 0;
+        this.busCurveVy *= Math.pow(0.03, dt);
+        if (Math.abs(this.busCurveVy) < 1) this.busCurveVy = 0;
+
+        if (ix > 0.1) p.facing = 1;
+        else if (ix < -0.1) p.facing = -1;
+
+        const onSeatElevated = Boolean(this.getEmptySeatUnderPlayer(156) && Math.abs(p.z - 24) <= 2);
+        if (p.z > 0 && !onSeatElevated) {
+          p.anim = 'jump';
+        } else if (Math.abs(ix) > 0.05 || Math.abs(iy) > 0.05) {
+          p.anim = 'walk';
+          p.animTimer += dt;
+        } else {
+          p.anim = 'idle';
+          p.animTimer += dt;
+        }
+      }
+    }
+
+    const seatSupport = this.getEmptySeatUnderPlayer(156);
+    const standingOnSeat = Boolean(
+      seatSupport && p.anim !== 'railSlam' && Math.abs(p.z - 24) <= 2 && p.vz <= 0
+    );
+    if (p.anim !== 'railGrab' && p.anim !== 'railSpin') {
+      if (standingOnSeat) {
+        p.z = 24;
+        p.vz = 0;
+        if (p.anim === 'jump' || p.anim === 'jumpKick') {
+          p.anim = Math.abs(ix) > 0.05 || Math.abs(iy) > 0.05 ? 'walk' : 'idle';
+        }
+      } else if (p.z > 0 || p.vz !== 0) {
+        p.z += p.vz * dt;
+        p.vz -= GRAVITY * dt;
+        if (seatSupport && p.anim !== 'railSlam' && p.vz <= 0 && p.z <= 26 && p.z >= 16) {
+          p.z = 24;
+          p.vz = 0;
+          if (p.anim === 'jump' || p.anim === 'jumpKick') {
+            p.anim = 'idle';
+          }
+        } else if (p.z <= 0) {
+          p.z = 0;
+          p.vz = 0;
+          if (p.anim === 'railSlam') {
+            this.resolveRailSlamImpact();
+            p.anim = 'idle';
+            p.animTimer = 0;
+          } else if (p.anim === 'jump' || p.anim === 'jumpKick') {
+            p.anim = 'idle';
+          }
+        }
+      }
+    } else if (p.anim === 'railSpin') {
+      p.vz = 0;
+    }
+
+    const bounds = this.getActiveWaveBounds();
+    const minPlayX = Math.max(24, bounds.minX + 18);
+    const maxPlayX = Math.min(this.line.busLength - 32, bounds.maxX - 18);
+    p.x = Math.max(minPlayX, Math.min(maxPlayX, p.x));
+    p.y = Math.max(AISLE_MIN_Y, Math.min(AISLE_MAX_Y, p.y));
+
+    if (this.turnstileCleared && !this.turnstileCrossed && p.x >= this.line.turnstileX - 8) {
+      this.turnstileCrossed = true;
+      this.turnstileSpinTimer = 0.72;
+      audio.playTurnstileSpin();
+      this.spawnParticles(this.line.turnstileX, p.y, 24, '#34d399', 10);
+      this.spawnHitSparks(this.line.turnstileX, p.y, 24, 1, {
+        target: 'turnstile_boss',
+        strong: true,
+      });
+    }
+
+    if (this.turnstileCleared && p.x >= this.line.exitDoorX - 18) {
+      this.handleReachExitDoor();
+    }
+  }
+
+  private resolvePlayerAttack() {
+    const p = this.player;
+    const isRailSpin = p.anim === 'railSpin';
+    const isBagSpin = p.anim === 'bagSpin';
+    const isSpecial = p.anim === 'special';
+    const isSoundSpecial = p.anim === 'soundSpecial';
+    const isHeadphoneWhip = p.anim === 'headphoneWhip';
+    const isCane = p.anim === 'cane';
+    const isKickFinisher = p.anim === 'kickFinisher';
+    const isUppercutFinisher = p.anim === 'punch3';
+    const isKick = p.anim === 'kick' || p.anim === 'jumpKick' || isKickFinisher;
+    const isFinisher = isUppercutFinisher || isKickFinisher;
+
+    if (p.anim === 'spray' || p.anim === 'railSlam') {
+      p.attackHasHit = true;
+      return;
+    }
+
+    const reachX = isHeadphoneWhip
+      ? 148
+      : isSoundSpecial
+        ? Math.round(92 * (1 + this.shopLoadout.specialReachBonus))
+        : isRailSpin
+          ? 62
+          : isBagSpin
+            ? 58
+            : isSpecial
+              ? 54
+              : isKickFinisher
+                ? 50
+                : isCane
+                  ? 48
+                  : isKick
+                    ? 40
+                    : 34;
+    const laneTol = isSoundSpecial
+      ? 46
+      : isRailSpin
+        ? 34
+        : isBagSpin || isSpecial
+          ? 32
+          : isHeadphoneWhip || isKickFinisher
+            ? 28
+            : 20;
+    // Cane damage reduced by 12% (22 -> 19); Headphone Whip does low ranged rock damage (9)
+    const baseDamage = isSoundSpecial
+      ? 28
+      : isSpecial
+        ? 24
+        : isKickFinisher
+          ? 21
+          : isUppercutFinisher
+            ? 19
+            : isCane
+              ? 19
+              : isRailSpin
+                ? 20
+                : isBagSpin
+                  ? 16
+                  : isKick
+                    ? 15
+                    : isHeadphoneWhip
+                      ? 9
+                      : 10;
+    const strMult = p.strengthBuffTimer > 0 ? 2 : 1;
+    const rageMult = p.rageTimer > 0 ? 1.5 : 1;
+    const windMult =
+      this.expressWindTimer > 0 && (isRailSpin || p.anim === 'jumpKick' || isSpecial || isSoundSpecial) ? 1.35 : 1;
+    const shopDamageMult = 1 + this.shopLoadout.damageMultBonus;
+    const damage = Math.round(baseDamage * strMult * rageMult * windMult * shopDamageMult);
+
+    let hitCount = 0;
+    let cleanHitCount = 0;
+    let landedStrongHit = false;
+    let usedCane = false;
+    let counterHit = false;
+
+    for (const e of this.enemies) {
+      if (e.hp <= 0) continue;
+      const dy = Math.abs(e.y - p.y);
+      if (dy > laneTol) continue;
+
+      const dx = e.x - p.x;
+      const inRange =
+        isSpecial || isSoundSpecial || isRailSpin || isBagSpin
+          ? Math.abs(dx) <= reachX
+          : dx * p.facing >= -8 && dx * p.facing <= reachX;
+
+      if (!inRange) continue;
+
+      if (e.type === 'industria' && e.stinkActive && !isSpecial && !isSoundSpecial) {
+        audio.playBlock();
+        this.addFloatingText('FEDOR! USE DESODORANTE!', e.x, e.y, e.z + 40, '#a3e635');
+        e.hp = Math.max(1, e.hp - 1);
+        hitCount++;
+        cleanHitCount++;
+        continue;
+      }
+
+      if (e.type === 'industria' && e.stinkActive && isSoundSpecial) {
+        e.stinkActive = false;
+        this.addFloatingText('ODOR DISSIPADO!', e.x, e.y, e.z + 44, '#67e8f9');
+      }
+
+      const playerInFrontOfStudent =
+        e.hasFrontBarrier && Math.sign(p.x - e.x) === e.facing;
+      const breaksBarrier =
+        isKick ||
+        isCane ||
+        isSpecial ||
+        isSoundSpecial ||
+        isRailSpin ||
+        isBagSpin ||
+        isFinisher ||
+        isHeadphoneWhip ||
+        p.anim === 'jumpKick';
+
+      if (playerInFrontOfStudent && !breaksBarrier) {
+        audio.playBlock();
+        this.shieldBreakHintTimer = 4.5;
+        this.spawnHitSparks(e.x + e.facing * 10, e.y, 18, -p.facing, {
+          target: 'barrier',
+          blocked: true,
+        });
+        if (e.guardMax > 0 && e.guardHp > 0) {
+          e.guardHp = Math.max(0, e.guardHp - 1);
+          if (e.guardHp === 0) {
+            e.hasFrontBarrier = false;
+            e.guardBrokenTimer = 4.5;
+            e.aiState = 'hurt';
+            e.stateTimer = 1.4;
+            const kbDir = dx >= 0 ? 1 : -1;
+            e.vx = kbDir * 95;
+            e.hitFlashTimer = 0.16;
+            e.hp -= Math.max(4, Math.round(damage * 0.8));
+            hitCount++;
+            cleanHitCount++;
+            landedStrongHit = true;
+            audio.playHeavyHit();
+            this.triggerShake(0.16, 3.2);
+            this.addFloatingText('GUARDA QUEBRADA!', e.x, e.y, e.z + 44, '#38bdf8');
+            if (e.hp <= 0) {
+              this.handleEnemyDefeated(e);
+            }
+            continue;
+          }
+        }
+        this.addFloatingText('MOCHILA BLOQUEOU!', e.x, e.y, e.z + 40, '#60a5fa');
+        p.vx = -p.facing * 170;
+        p.anim = 'hurt';
+        p.animTimer = 0.22;
+        this.damagePlayer(5);
+        hitCount++;
+        continue;
+      }
+
+      if (
+        e.aiState === 'windup' &&
+        (isFinisher || isKick || isCane || isSpecial || isSoundSpecial || isBagSpin)
+      ) {
+        counterHit = true;
+      }
+
+      let effectiveDamage = damage;
+      if (e.type === 'boss_cobrador_blindado' && e.guardMax > 0) {
+        if (e.guardBrokenTimer > 0) {
+          effectiveDamage = Math.round(damage * 1.35);
+        } else if (e.guardHp > 0 && !breaksBarrier && Math.sign(p.x - e.x) === e.facing) {
+          effectiveDamage = Math.max(1, Math.round(damage * 0.7));
+        }
+      }
+
+      let guardBrokenNow = false;
+      if (e.guardMax > 0 && e.guardHp > 0 && e.guardBrokenTimer <= 0) {
+        const guardDamage = breaksBarrier ? (e.isBoss ? 2 : 3) : 1;
+        e.guardHp = Math.max(0, e.guardHp - guardDamage);
+        if (e.guardHp === 0) {
+          guardBrokenNow = true;
+          e.guardBrokenTimer = e.isBoss ? 5.0 : 4.5;
+          e.hasFrontBarrier = false;
+          this.spawnHitSparks(e.x, e.y, e.z + 22, dx >= 0 ? 1 : -1, {
+            target: 'barrier',
+            strong: true,
+          });
+          this.addFloatingText(
+            e.isBoss ? 'BLINDAGEM QUEBRADA!' : 'GUARDA QUEBRADA!',
+            e.x,
+            e.y,
+            e.z + 50,
+            '#38bdf8'
+          );
+          this.pushCombatLog(
+            e.isBoss ? 'Blindagem do chefe quebrada!' : 'Guarda quebrada!',
+            'cyan',
+            4.2
+          );
+        }
+      }
+
+      e.hp -= effectiveDamage;
+      e.hitFlashTimer = 0.14;
+      e.aiState = 'hurt';
+      e.stateTimer = guardBrokenNow
+        ? e.isBoss
+          ? 1.6
+          : 1.35
+        : isFinisher || isKick || isSpecial || isSoundSpecial || isRailSpin || isBagSpin || isHeadphoneWhip
+          ? 0.42
+          : 0.28;
+      const kbDir = dx >= 0 ? 1 : -1;
+      const windKbMult = this.expressWindTimer > 0 ? 1.35 : 1;
+      e.vx =
+        kbDir *
+        (isSoundSpecial
+          ? 220
+          : isKickFinisher
+            ? 205
+            : isBagSpin
+              ? 185
+              : isUppercutFinisher
+                ? 170
+                : isKick || isSpecial || isRailSpin
+                  ? 160
+                  : isHeadphoneWhip
+                    ? 115
+                    : 75) *
+        windKbMult;
+      if (isKickFinisher || isUppercutFinisher || isSoundSpecial) {
+        e.vz = isUppercutFinisher ? 135 : 120;
+        e.z = Math.max(e.z, 2);
+      }
+      hitCount++;
+      cleanHitCount++;
+
+      if (isCane) usedCane = true;
+
+      const isStrongHit =
+        guardBrokenNow ||
+        isFinisher ||
+        isKick ||
+        isSpecial ||
+        isSoundSpecial ||
+        isRailSpin ||
+        isBagSpin ||
+        isCane;
+      if (isStrongHit || isHeadphoneWhip) {
+        landedStrongHit = true;
+      }
+      if (isStrongHit) {
+        audio.playHeavyHit();
+        this.hitstopTimer = isFinisher || isSoundSpecial || guardBrokenNow ? 0.062 : 0.055;
+        this.triggerShake(
+          isFinisher || isSoundSpecial || guardBrokenNow ? 0.18 : 0.12,
+          isFinisher || isSoundSpecial || guardBrokenNow ? 3.8 : 2.5
+        );
+      } else {
+        if (!isHeadphoneWhip) audio.playPunch();
+        this.hitstopTimer = 0.036;
+      }
+
+      // Clean 16-bit yellow/white impact starburst at contact point + crisp metallic pixel sparks
+      this.impactFlashes.push({
+        x: e.x - kbDir * 6,
+        y: e.y - e.z - 26,
+        life: 0.14,
+        maxLife: 0.14,
+        strong: isStrongHit || isHeadphoneWhip || e.isBoss,
+      });
+      this.spawnHitSparks(e.x - kbDir * 5, e.y, e.z + 22, kbDir, {
+        target: e.isBoss ? 'turnstile_boss' : 'passenger',
+        bossType: e.type,
+        strong: isStrongHit || isHeadphoneWhip,
+        finisher: isFinisher || isSoundSpecial,
+      });
+      if (isFinisher) {
+        this.addFloatingText(
+          isKickFinisher ? 'CHUTAÇO!' : 'GANCHO!',
+          e.x,
+          e.y,
+          e.z + 44,
+          '#fde047'
+        );
+      }
+      this.addFloatingText(`-${effectiveDamage}`, e.x, e.y, e.z + 32, guardBrokenNow ? '#38bdf8' : '#f8fafc');
+      p.score += effectiveDamage * 2;
+
+      if (p.anim === 'jumpKick' && e.isBoss) {
+        this.bossBulletTimeTimer = Math.max(this.bossBulletTimeTimer, 0.48);
+        this.hitstopTimer = Math.max(this.hitstopTimer, 0.055);
+        this.spawnParticles(e.x, e.y, e.z + 24, '#fde047', 10);
+        this.addFloatingText('GARÇA!', e.x, e.y, e.z + 48, '#fde047');
+      }
+
+      if (e.hp <= 0) {
+        this.handleEnemyDefeated(e);
+      } else {
+        this.checkBossHalfHpTaunt(e);
+      }
+    }
+
+    if (hitCount > 0) {
+      if (cleanHitCount > 0) {
+        this.registerHitChain(cleanHitCount);
+        vibrateHit(landedStrongHit);
+      }
+      p.attackHasHit = true;
+      if (counterHit && this.perfectTimingCooldown <= 0) {
+        this.perfectTimingCooldown = 2.0;
+        this.pushScreenNotification(
+          'Perfect Timing!',
+          'cyan',
+          p.x + p.facing * 24,
+          p.y,
+          p.z + 54
+        );
+      }
+      if (!isSpecial && !isSoundSpecial) {
+        const energyGain = isFinisher || isCane || isRailSpin || isBagSpin ? 14 : 8;
+        p.specialEnergy = Math.min(100, p.specialEnergy + energyGain);
+      }
+      if (
+        p.comboStep > 0 ||
+        p.comboStreak >= 2 ||
+        isFinisher ||
+        isKick ||
+        isCane ||
+        isSpecial ||
+        isSoundSpecial ||
+        isRailSpin ||
+        isBagSpin ||
+        isHeadphoneWhip
+      ) {
+        const streakBoost = Math.min(0.55, p.comboMultiplier * 0.065);
+        const stepBoost = p.comboStep === 2 || isFinisher || isSpecial || isSoundSpecial ? 0.35 : 0.2;
+        this.comboFlickerIntensity = Math.min(
+          1,
+          Math.max(this.comboFlickerIntensity, 0.3 + streakBoost + stepBoost)
+        );
+        this.comboFlickerTimer = Math.max(this.comboFlickerTimer, 0.85);
+      }
+      if (usedCane && p.caneCharges > 0) {
+        p.caneCharges--;
+        if (p.caneCharges === 0) {
+          this.addFloatingText('BENGALA QUEBROU!', p.x, p.y, p.z + 36, '#fb923c');
+        }
+      }
+    }
+  }
+
+  private handleEnemyDefeated(e: EnemyEntity) {
+    const p = this.player;
+    p.enemiesDefeated++;
+    p.comboStreak += 1;
+    p.comboMultiplier = p.comboStreak < 2 ? 1 : p.comboStreak;
+
+    const basePts = e.isBoss ? 800 : 120;
+    const totalPts = basePts * p.comboMultiplier;
+    p.score += totalPts;
+    this.spawnParticles(e.x, e.y, 16, '#f97316', 6);
+
+    if (p.comboMultiplier === 7 && !p.headphoneWhipUsed) {
+      this.addFloatingText('FONE ROCK!', p.x, p.y, p.z + 52, '#fde047');
+    }
+
+    if (p.comboMultiplier >= 2) {
+      this.comboFlickerIntensity = Math.min(
+        1,
+        Math.max(this.comboFlickerIntensity, 0.42 + p.comboMultiplier * 0.06)
+      );
+      this.comboFlickerTimer = Math.max(this.comboFlickerTimer, 1.0);
+      this.addFloatingText(
+        `COMBO x${p.comboMultiplier}! +${totalPts}`,
+        e.x,
+        e.y,
+        42,
+        p.comboMultiplier >= 10
+          ? '#f43f5e'
+          : p.comboMultiplier > 5
+            ? '#fb923c'
+            : '#facc15'
+      );
+    }
+
+    if (p.comboMultiplier > 5) {
+      this.triggerShake(0.36, 5);
+      this.comboTintTimer = 0.65;
+      this.spawnParticles(p.x, p.y, p.z + 20, '#f97316', 6);
+    }
+
+    if (!e.isRageClone) {
+      const progress = recordDefeatedEnemyMilestone(1);
+      if (progress.totalDefeated >= 50) {
+        this.unlockAchievement('derrotar_50');
+      }
+    }
+
+    if (p.comboMultiplier >= 10) {
+      this.unlockAchievement('rage_10x');
+    }
+    if (e.isBoss && p.rageTimer > 0) {
+      this.unlockAchievement('boss_rage_ko');
+    }
+    if (p.anim === 'railSpin') {
+      this.railSpinKoCount++;
+      if (this.railSpinKoCount >= 2) {
+        this.unlockAchievement('acrobata_busao');
+      }
+    }
+
+    if (p.comboMultiplier === 10 || (p.comboMultiplier > 10 && p.rageTimer <= 0)) {
+      this.activateRageBuff();
+    }
+
+    if (e.isChaser) {
+      this.fiscalChasing = false;
+      this.addFloatingText('FISCAL KO! +400', e.x, e.y, 38, '#38bdf8');
+      p.score += 280;
+    }
+
+    if (e.type === 'estudante') {
+      p.makeupShieldTimer = Math.max(p.makeupShieldTimer, 10 + this.shopLoadout.buffDurationBonus);
+      p.shieldHits = 5;
+      audio.playMakeup();
+      this.spawnParticles(p.x, p.y, p.z + 20, '#38bdf8', 14);
+      this.addFloatingText('ESCUDO MOCHILA (5)!', p.x, p.y, p.z + 44, '#38bdf8');
+    }
+
+    if (p.enemiesDefeated > 0 && p.enemiesDefeated % 5 === 0) {
+      p.strengthBuffTimer = 10 + this.shopLoadout.buffDurationBonus;
+      audio.playMakeup();
+      this.spawnParticles(p.x, p.y, p.z + 20, '#f97316', 18);
+      this.addFloatingText('FORÇA 2x!', p.x, p.y, p.z + 52, '#facc15');
+    }
+
+    let drop: ItemType | undefined = e.guaranteedDrop;
+    if (!drop) {
+      const r = Math.random();
+      if (e.type === 'idosa' && (p.caneCharges === 0 || r < 0.75)) {
+        drop = 'bengala';
+      } else if (e.type === 'vendedor' && (p.hp < 70 || r < 0.75)) {
+        drop = r < 0.25 ? 'bilhete_dourado' : 'chocolate';
+      } else if (e.type === 'estudante' && r < 0.85) {
+        drop = 'creditos';
+      } else if (e.type === 'patricinha') {
+        drop = p.deodorantCount === 0 || r < 0.55 ? 'desodorante' : 'maquiagem';
+      } else if (e.type === 'tio_audio') {
+        drop = r < 0.6 ? 'cafezinho' : 'creditos';
+      } else if (e.type === 'skatista') {
+        drop = r < 0.65 ? 'cafezinho' : 'maquiagem';
+      }
+    }
+
+    if (drop) {
+      this.spawnDrop(drop, e.x, e.y);
+    }
+
+    if (e.isBoss) {
+      this.triggerBossFinisher(e);
+    }
+    this.pushHudSnapshot();
+  }
+
+  private checkBossHalfHpTaunt(e: EnemyEntity) {
+    if (!e.isBoss || e.halfHpTauntTriggered || e.hp <= 0 || e.hp > e.maxHp * 0.5) {
+      return;
+    }
+    e.halfHpTauntTriggered = true;
+    const taunts = [
+      'SEU COTOVELO TÁ NA MINHA COSTELA!',
+      'NÃO CABE NEM UMA SARDINHA AQUI!',
+      'PARA DE EMPURRAR QUE EU TÔ PRENSADO!',
+      'TÁ ACHANDO QUE ISSO AQUI É UBER?!',
+      'MINHA MOCHILA TÁ ESMAGADA, ESTAGIÁRIO!',
+      'DÁ LICENÇA QUE O FUNDÃO JÁ LOTOU!',
+      'APERTADO ASSIM EU BATO ATÉ NO MOTORISTA!',
+      'NINGUÉM DESCE NESSA PARADA NÃO!',
+    ];
+    e.speechText = taunts[Math.floor(Math.random() * taunts.length)];
+    e.speechTimer = 3.2;
+  }
+
+  private getBossFinisherTheme(e: EnemyEntity): {
+    primaryColor: string;
+    secondaryColor: string;
+    style: 'turnstile' | 'armor' | 'tickets';
+    koSpeech: string;
+  } {
+    if (e.type === 'boss_cobrador_blindado') {
+      return {
+        primaryColor: '#ef4444',
+        secondaryColor: '#94a3b8',
+        style: 'armor',
+        koSpeech: 'BLINDAGEM QUEBROU!',
+      };
+    }
+    if (e.type === 'boss_fiscal_chefe') {
+      return {
+        primaryColor: '#38bdf8',
+        secondaryColor: '#f8fafc',
+        style: 'tickets',
+        koSpeech: 'ANOTEI NA CADERNETA...',
+      };
+    }
+    if (e.type === 'boss_motorista') {
+      return {
+        primaryColor: '#eab308',
+        secondaryColor: '#38bdf8',
+        style: 'turnstile',
+        koSpeech: 'FREIO DE MÃO PUXADO!',
+      };
+    }
+    return {
+      primaryColor: '#f97316',
+      secondaryColor: '#facc15',
+      style: 'turnstile',
+      koSpeech: 'MINHA CATRACA!',
+    };
+  }
+
+  private triggerBossFinisher(e: EnemyEntity) {
+    const theme = this.getBossFinisherTheme(e);
+    this.hitstopTimer = 0.14;
+    this.bossKoFlashTimer = 0.45;
+    this.bossKoTrailTimer = 0.04;
+    this.triggerShake(0.55, 8);
+    audio.playBossFinisher();
+    vibrateHit(true);
+
+    e.aiState = 'knockdown';
+    e.stateTimer = 1.15;
+    e.vz = 220;
+    e.z = Math.max(e.z, 2);
+    e.vx = -e.facing * 155;
+    e.hitFlashTimer = 0.25;
+    e.speechText = theme.koSpeech;
+    e.speechTimer = 1.15;
+
+    this.bossFinisherEffects.push({
+      x: e.x,
+      y: e.y,
+      z: e.z,
+      life: 0.9,
+      maxLife: 0.9,
+      label: '',
+      primaryColor: theme.primaryColor,
+      secondaryColor: theme.secondaryColor,
+      style: theme.style,
+    });
+    this.spawnParticles(e.x, e.y, e.z + 20, '#facc15', 16);
+    this.spawnHitSparks(e.x, e.y, e.z + 22, -e.facing, {
+      target: 'turnstile_boss',
+      bossType: e.type,
+      strong: true,
+      finisher: true,
+    });
+  }
+
+  private spawnBossKoBurst(e: EnemyEntity) {
+    const theme = this.getBossFinisherTheme(e);
+    audio.playHeavyHit();
+    this.triggerShake(0.45, 7);
+    this.bossKoFlashTimer = 0.35;
+    this.bossKoOverlay = {
+      life: 1.35,
+      maxLife: 1.35,
+      primaryColor: theme.primaryColor,
+      secondaryColor: theme.secondaryColor,
+      style: theme.style,
+    };
+    this.bossFinisherEffects.push({
+      x: e.x,
+      y: e.y,
+      z: e.z,
+      life: 1.0,
+      maxLife: 1.0,
+      label: '',
+      primaryColor: theme.primaryColor,
+      secondaryColor: theme.secondaryColor,
+      style: theme.style,
+    });
+    this.spawnParticles(e.x, e.y, e.z + 18, '#facc15', 14);
+    this.spawnParticles(e.x, e.y, e.z + 18, theme.primaryColor, 12);
+    this.spawnHitSparks(e.x, e.y, e.z + 18, -e.facing, {
+      target: 'turnstile_boss',
+      bossType: e.type,
+      strong: true,
+      finisher: true,
+    });
+
+    const hasOtherActiveBoss = this.enemies.some((other) => other !== e && other.isBoss && other.hp > 0);
+    if (!hasOtherActiveBoss && this.player.hp > 0) {
+      const p = this.player;
+      p.anim = 'victory';
+      p.animTimer = 1.0;
+      p.vx = 0;
+      p.vy = 0;
+      p.z = 0;
+      p.vz = 0;
+      p.invulnTimer = Math.max(p.invulnTimer, 1.15);
+      audio.playHeal();
+      this.spawnParticles(p.x, p.y, 26, '#facc15', 14);
+    }
+  }
+
+  private activateRageBuff() {
+    const p = this.player;
+    p.rageTimer = 15;
+    p.rageNotificationTimer = 5.0;
+    audio.playSpecial();
+    audio.playCorporateNotification();
+    vibrateSpecial('rage');
+    this.triggerShake(0.45, 7);
+    this.comboTintTimer = 0.75;
+    this.spawnParticles(p.x, p.y, p.z + 22, '#6366f1', 22);
+    this.addFloatingText('MODO RAGE!', p.x, p.y, p.z + 56, '#f43f5e');
+    this.pushCombatLog('Modo Rage ativado (15s)!', 'rose', 4.8);
+
+    const bounds = this.getActiveWaveBounds();
+    const activeRegulars = this.enemies.filter(
+      (en) => !en.isRageClone && en.hp > 0 && (en.type === 'idosa' || en.type === 'patricinha')
+    );
+
+    if (activeRegulars.length > 0) {
+      for (const orig of activeRegulars) {
+        const cloneX = Math.min(
+          bounds.maxX - 20,
+          Math.max(bounds.minX + 20, orig.x + (orig.x > p.x ? 26 : -26))
+        );
+        const cloneY = orig.y > 190 ? orig.y - 22 : orig.y + 22;
+        const clone = this.spawnEnemy(orig.type, cloneX, cloneY, false);
+        clone.isRageClone = true;
+      }
+    } else {
+      const activeWave = this.waves.find((w) => w.triggered && !w.cleared && !w.isBossWave);
+      if (activeWave) {
+        const regularSpawns = activeWave.spawns.filter(
+          (s) => s.type === 'idosa' || s.type === 'patricinha'
+        );
+        for (const s of regularSpawns) {
+          const spawnX = Math.min(
+            activeWave.lockMaxX - 24,
+            Math.max(p.x + 125, s.offsetX)
+          );
+          const clone = this.spawnEnemy(s.type, spawnX, s.y, false);
+          clone.isRageClone = true;
+        }
+      }
+    }
+  }
+
+  private resetComboStreak(showNotice = true) {
+    const p = this.player;
+    const hadCombo = p.comboMultiplier >= 2;
+    p.comboStreak = 0;
+    p.comboMultiplier = 1;
+    p.hitsLanded = 0;
+    this.hitChainTimer = 0;
+    p.headphoneWhipUsed = false;
+    this.comboTintTimer = 0;
+    if (hadCombo && showNotice) {
+      this.addFloatingText('COMBO PERDIDO!', p.x, p.y, p.z + 48, '#f87171');
+      this.pushScreenNotification('Combo Breaker!', 'rose', p.x, p.y, p.z + 58);
+    }
+  }
+
+  private damagePlayer(rawDmg: number) {
+    const p = this.player;
+    if (p.invulnTimer > 0) return;
+
+    if (p.anim === 'bagGuard') {
+      this.triggerBagCounterSpin(true);
+      return;
+    }
+    if (p.anim === 'bagSpin') {
+      return;
+    }
+
+    if (p.makeupShieldTimer > 0 && p.shieldHits > 0) {
+      p.invulnTimer = 0.28;
+      p.shieldHits--;
+      audio.playBlock();
+      vibrateDamage(true);
+      this.spawnHitSparks(p.x + p.facing * 6, p.y, p.z + 18, p.facing, {
+        target: 'barrier',
+        blocked: true,
+      });
+      if (p.shieldHits <= 0) {
+        p.makeupShieldTimer = 0;
+        this.addFloatingText('ESCUDO QUEBROU!', p.x, p.y, p.z + 38, '#fb923c');
+      } else {
+        this.addFloatingText(`MOCHILA BLOQUEOU (${p.shieldHits})!`, p.x, p.y, p.z + 38, '#67e8f9');
+      }
+      this.pushHudSnapshot();
+      return;
+    }
+
+    const diff = LINE_DIFFICULTY[this.line.lineNumber];
+    const dmg = Math.max(2, Math.round(rawDmg * diff.damageMult));
+    p.hp = Math.max(0, p.hp - dmg);
+    this.damageTakenThisLine = true;
+    this.seatRestHoldTimer = 0;
+    this.resetComboStreak(true);
+    p.invulnTimer = 0.42;
+    p.hitFlashTimer = 0.16;
+    p.anim = 'hurt';
+    p.animTimer = 0.22;
+    audio.playHurt();
+    this.triggerShake(0.16, 4);
+    this.spawnHitSparks(p.x, p.y, p.z + 20, -p.facing, { target: 'player' });
+    this.addFloatingText(`-${dmg}`, p.x, p.y, p.z + 36, '#ef4444');
+
+    if (p.hp <= 0) {
+      this.gameState = 'GAME_OVER';
+      audio.playGameOver();
+      vibrateGameOver();
+    } else {
+      vibrateDamage(false);
+    }
+    this.pushHudSnapshot();
+  }
+
+  private triggerShake(duration: number, mag: number) {
+    this.shakeTimer = Math.max(this.shakeTimer, duration);
+    this.shakeMag = Math.max(this.shakeMag, mag);
+  }
+
+  private updateBusEvents(dt: number) {
+    if (this.turnstileCleared && this.gameMode !== 'infinite') return;
+
+    if (this.busEventState !== 'none') {
+      this.busEventWarnTimer -= dt;
+      if (this.busEventWarnTimer <= 0) {
+        const stateMap = {
+          brake_warn: 'brake',
+          bump_warn: 'bump',
+          curve_warn: 'curve',
+          window_vendor_warn: 'window_vendor',
+          express_surge_warn: 'express_surge',
+          door_crowd_warn: 'door_crowd',
+          short_circuit_warn: 'short_circuit',
+        } as const;
+        const kind = stateMap[this.busEventState];
+        this.busEventState = 'none';
+        this.executeBusEvent(kind);
+        this.busEventCooldown = 14 + Math.random() * 5;
+      }
+      return;
+    }
+
+    this.busEventCooldown -= dt;
+    if (this.busEventCooldown <= 0) {
+      const slot = this.busEventStep % 5;
+      this.busEventStep++;
+      if (slot === 0) {
+        this.busEventState = 'brake_warn';
+        this.busEventWarnTimer = 1.4;
+        audio.playStopBell();
+        this.showAlert('SEGURA NO FERRO! FREIO BRUSCO!', 1.4);
+      } else if (slot === 1) {
+        this.busEventState = 'bump_warn';
+        this.busEventWarnTimer = 1.4;
+        audio.playStopBell();
+        this.showAlert('LOMBADA À FRENTE! PULE!', 1.4);
+      } else if (slot === 2) {
+        this.busEventState = 'door_crowd_warn';
+        this.busEventWarnTimer = 1.4;
+        audio.playWhistle();
+        this.showAlert('PARADA DE EMBARQUE! PORTA ABRINDO!', 1.4);
+      } else if (slot === 3) {
+        this.busEventState = 'short_circuit_warn';
+        this.busEventWarnTimer = 1.3;
+        audio.playStopBell();
+        this.showAlert('CURTO-CIRCUITO NO TETO! CARGA ELÉTRICA!', 1.3);
+      } else if (this.line.lineNumber === 1) {
+        this.busEventState = 'curve_warn';
+        this.busEventWarnTimer = 1.5;
+        audio.playStopBell();
+        this.showAlert('CURVA FECHADA! SEGURA NA ALÇA!', 1.5);
+      } else if (this.line.lineNumber === 2) {
+        this.busEventState = 'window_vendor_warn';
+        this.busEventWarnTimer = 1.4;
+        audio.playWhistle();
+        this.showAlert('SINAL VERMELHO! VENDEDOR NA JANELA!', 1.4);
+      } else {
+        this.busEventState = 'express_surge_warn';
+        this.busEventWarnTimer = 1.4;
+        audio.playStopBell();
+        this.showAlert('PISTA EXPRESSA! VENTANIA TURBO!', 1.4);
+      }
+    }
+  }
+
+  private executeBusEvent(
+    kind: 'brake' | 'bump' | 'curve' | 'window_vendor' | 'express_surge' | 'door_crowd' | 'short_circuit'
+  ) {
+    const p = this.player;
+    if (kind === 'brake') {
+      audio.playBusBrake();
+      this.triggerShake(0.42, 6);
+
+      if (p.z < 6 && p.anim !== 'railGrab' && p.anim !== 'railSpin') {
+        this.busSlideVx = -165;
+      }
+
+      for (const e of this.enemies) {
+        if (e.hp <= 0 || e.z >= 8) continue;
+        const push = e.isBoss ? -95 : -215;
+        e.vx = push;
+        e.aiState = 'hurt';
+        e.stateTimer = Math.max(e.stateTimer, 0.32);
+      }
+
+      // Check enemy-on-enemy chain collisions from brake slide
+      for (let i = 0; i < this.enemies.length; i++) {
+        const a = this.enemies[i];
+        if (a.hp <= 0 || a.isBoss) continue;
+        for (let j = i + 1; j < this.enemies.length; j++) {
+          const b = this.enemies[j];
+          if (b.hp <= 0) continue;
+          if (Math.abs(a.x - b.x) < 28 && Math.abs(a.y - b.y) < 18) {
+            a.hp -= 10;
+            b.hp -= 10;
+            this.spawnParticles((a.x + b.x) / 2, a.y, 14, '#fde047', 6);
+            this.addFloatingText('-10', a.x, a.y, 34, '#fb923c');
+            if (a.hp <= 0) this.handleEnemyDefeated(a);
+            if (b.hp <= 0) this.handleEnemyDefeated(b);
+            break;
+          }
+        }
+      }
+    } else if (kind === 'bump') {
+      audio.playBusBump();
+      this.triggerShake(0.32, 5);
+
+      if (p.z === 0 && p.anim !== 'railGrab' && p.anim !== 'railSpin') {
+        p.vz = 155;
+        p.anim = 'jump';
+      }
+
+      for (const e of this.enemies) {
+        if (e.hp <= 0) continue;
+        if (e.z <= 2) {
+          e.vz = e.isBoss ? 120 : 205;
+          e.z = 2;
+          if (!e.isBoss) {
+            e.aiState = 'hurt';
+            e.stateTimer = Math.max(e.stateTimer, 0.38);
+          }
+          this.spawnParticles(e.x, e.y, 4, '#cbd5e1', 4);
+        }
+      }
+    } else if (kind === 'curve') {
+      audio.playBusCurve();
+      this.triggerShake(0.4, 5);
+      const dir = Math.random() < 0.5 ? -1 : 1;
+
+      if (p.z < 6 && p.anim !== 'railGrab' && p.anim !== 'railSpin') {
+        this.busCurveVy = dir * 155;
+      }
+
+      for (const e of this.enemies) {
+        if (e.hp <= 0 || e.z >= 8) continue;
+        const nextY = e.y + dir * (e.isBoss ? 18 : 36);
+        const clampedY = Math.max(AISLE_MIN_Y, Math.min(AISLE_MAX_Y, nextY));
+        e.y = clampedY;
+        if (clampedY === AISLE_MIN_Y || clampedY === AISLE_MAX_Y) {
+          e.hp -= 8;
+          e.hitFlashTimer = 0.16;
+          this.spawnParticles(e.x, e.y, 14, '#fde047', 6);
+          this.addFloatingText('-8', e.x, e.y, 34, '#fb923c');
+          if (e.hp <= 0) {
+            this.handleEnemyDefeated(e);
+          } else {
+            this.checkBossHalfHpTaunt(e);
+          }
+        }
+      }
+    } else if (kind === 'window_vendor') {
+      audio.playGumSplat();
+      const count = 3;
+      const travelTime = 0.62;
+      for (let i = 0; i < count; i++) {
+        const startX = this.camX + 95 + i * 110;
+        const targetY = AISLE_MIN_Y + 12 + Math.random() * (AISLE_MAX_Y - AISLE_MIN_Y - 24);
+        this.projectiles.push({
+          id: this.nextId++,
+          kind: 'gum',
+          fromPlayer: false,
+          x: startX,
+          y: 112,
+          z: 36,
+          vx: (Math.random() - 0.5) * 40,
+          vy: (targetY - 112) / travelTime,
+          vz: 85,
+          damage: 8,
+          life: 0.9,
+          radius: 10,
+        });
+      }
+    } else if (kind === 'door_crowd') {
+      audio.playStopBell();
+      const bounds = this.getActiveWaveBounds();
+      if (this.enemies.length < 7) {
+        const spawnX = Math.min(bounds.maxX - 24, Math.max(bounds.minX + 100, this.camX + INTERNAL_WIDTH - 48));
+        const extraType: EnemyType = Math.random() < 0.5 ? 'tio_audio' : 'patricinha';
+        const en = this.spawnEnemy(extraType, spawnX, 176, false, 'cafezinho');
+        en.speechText = 'LICENÇA QUE TÁ LOTADO!';
+        en.speechTimer = 2.0;
+        this.spawnParticles(spawnX, 176, 18, '#facc15', 10);
+      } else {
+        this.spawnDrop('cafezinho', Math.min(bounds.maxX - 30, p.x + 70), 186);
+      }
+    } else if (kind === 'short_circuit') {
+      this.shortCircuitTimer = 3.8;
+      p.specialEnergy = Math.min(100, p.specialEnergy + 25);
+      audio.playSoundWave();
+      this.triggerShake(0.28, 4.5);
+      this.addFloatingText('+25 ESP', p.x, p.y, p.z + 42, '#38bdf8');
+      for (const e of this.enemies) {
+        if (e.hp > 0 && !e.isBoss && Math.abs(e.x - p.x) < 160) {
+          e.aiState = 'hurt';
+          e.stateTimer = Math.max(e.stateTimer, 0.35);
+          e.hitFlashTimer = 0.14;
+        }
+      }
+    } else {
+      this.expressWindTimer = 6.0;
+      audio.playExpressWind();
+    }
+  }
+
+  private updateEnemies(dt: number) {
+    const p = this.player;
+
+    for (let i = this.enemies.length - 1; i >= 0; i--) {
+      const e = this.enemies[i];
+      if (e.aiState === 'knockdown') {
+        e.stateTimer -= dt;
+        e.walkPhase += dt * 4;
+        e.x += e.vx * dt;
+        e.vx *= Math.pow(0.18, dt);
+        if (e.z > 0 || e.vz !== 0) {
+          e.z += e.vz * dt;
+          e.vz -= GRAVITY * dt;
+          if (e.z <= 0) {
+            e.z = 0;
+            if (Math.abs(e.vz) > 75) {
+              e.vz = Math.abs(e.vz) * 0.42;
+              e.z = 1;
+              this.triggerShake(0.18, 4.5);
+              audio.playBusBump();
+              this.spawnParticles(e.x, e.y, 6, '#facc15', 10);
+            } else {
+              e.vz = 0;
+            }
+          }
+        }
+        this.bossKoTrailTimer -= dt;
+        if (this.bossKoTrailTimer <= 0) {
+          this.bossKoTrailTimer = 0.09;
+          this.spawnParticles(
+            e.x,
+            e.y,
+            e.z + 16,
+            Math.random() < 0.5 ? '#facc15' : '#f97316',
+            3
+          );
+        }
+        e.x = Math.max(24, Math.min(this.line.busLength - 32, e.x));
+        if (e.hitFlashTimer > 0) e.hitFlashTimer = Math.max(0, e.hitFlashTimer - dt);
+        if (e.speechTimer > 0) e.speechTimer = Math.max(0, e.speechTimer - dt);
+        if (e.stateTimer <= 0) {
+          this.spawnBossKoBurst(e);
+          this.enemies.splice(i, 1);
+        }
+        continue;
+      }
+
+      if (e.hp <= 0) {
+        this.enemies.splice(i, 1);
+        continue;
+      }
+
+      if (e.hitFlashTimer > 0) e.hitFlashTimer = Math.max(0, e.hitFlashTimer - dt);
+      if (e.speechTimer > 0) e.speechTimer = Math.max(0, e.speechTimer - dt);
+      if (e.attackCooldown > 0) e.attackCooldown = Math.max(0, e.attackCooldown - dt);
+      if (e.guardBrokenTimer > 0) {
+        e.guardBrokenTimer = Math.max(0, e.guardBrokenTimer - dt);
+        if (e.guardBrokenTimer === 0 && e.guardMax > 0) {
+          e.guardHp = e.guardMax;
+          if (e.type === 'estudante') {
+            e.hasFrontBarrier = true;
+          }
+          this.addFloatingText('GUARDA RECUPERADA!', e.x, e.y, e.z + 40, '#38bdf8');
+        }
+      }
+
+      if (e.type === 'industria' && e.stinkActive && e.aiState !== 'hurt') {
+        const dist = Math.hypot(p.x - e.x, (p.y - e.y) * 1.5);
+        if (dist <= 40 && p.z < 18) {
+          e.stinkTickTimer -= dt;
+          if (e.stinkTickTimer <= 0) {
+            e.stinkTickTimer = 0.6;
+            this.damagePlayer(4);
+          }
+        }
+      }
+
+      const diff = LINE_DIFFICULTY[this.line.lineNumber];
+      const dx = p.x - e.x;
+      const dy = p.y - e.y;
+      const absDx = Math.abs(dx);
+      const absDy = Math.abs(dy);
+
+      if (e.aiState === 'hurt') {
+        e.stateTimer -= dt;
+        e.x += e.vx * dt;
+        e.vx *= Math.pow(0.04, dt);
+        if (e.stateTimer <= 0) {
+          e.aiState = 'approach';
+        }
+      } else if (e.aiState === 'skateWindup') {
+        e.stateTimer -= dt;
+        if (e.stateTimer <= 0) {
+          e.aiState = 'skateDash';
+          e.stateTimer = 0.68;
+          e.spinTickTimer = 0;
+          audio.playSkateDash();
+        }
+      } else if (e.aiState === 'skateDash') {
+        e.stateTimer -= dt;
+        e.x += e.facing * 230 * diff.speedMult * dt;
+        e.walkPhase += dt * 4;
+        if (absDx < 26 && absDy < 16 && p.z < 18 && e.spinTickTimer <= 0) {
+          e.spinTickTimer = 0.5;
+          this.damagePlayer(10);
+          p.vx = e.facing * 150;
+          this.addFloatingText('ATROPELADO!', p.x, p.y, p.z + 40, '#facc15');
+        }
+        if (e.stateTimer <= 0) {
+          e.aiState = 'cooldown';
+          e.stateTimer = 0.75 * diff.cooldownMult;
+          e.attackCooldown = 2.0 * diff.cooldownMult;
+        }
+      } else if (e.aiState === 'spinWindup') {
+        e.stateTimer -= dt;
+        if (e.stateTimer <= 0) {
+          e.aiState = 'spinAttack';
+          e.stateTimer = 1.6;
+          e.spinTickTimer = 0.05;
+          audio.playTurnstileSpin();
+        }
+      } else if (e.aiState === 'spinAttack') {
+        e.stateTimer -= dt;
+        const dirX = Math.sign(dx) || e.facing;
+        const dirY = Math.sign(dy);
+        const spinSpeed = (e.type === 'boss_cobrador_blindado' ? 92 : 76) * diff.speedMult;
+        e.x += dirX * spinSpeed * dt;
+        e.y += dirY * 45 * diff.speedMult * dt;
+
+        if (absDx < 32 && absDy < 20 && p.z < 20) {
+          e.spinTickTimer -= dt;
+          if (e.spinTickTimer <= 0) {
+            e.spinTickTimer = 0.32;
+            this.damagePlayer(e.type === 'boss_cobrador_blindado' ? 9 : 7);
+          }
+        }
+
+        if (e.stateTimer <= 0) {
+          e.aiState = 'cooldown';
+          e.stateTimer = 0.85 * diff.cooldownMult;
+          e.attackCooldown = 2.4 * diff.cooldownMult;
+        }
+      } else if (e.aiState === 'windup') {
+        e.stateTimer -= dt;
+        if (e.stateTimer <= 0) {
+          e.aiState = 'attack';
+          e.stateTimer = 0.24;
+          this.executeEnemyAttack(e);
+        }
+      } else if (e.aiState === 'attack') {
+        e.stateTimer -= dt;
+        if (e.stateTimer <= 0) {
+          e.aiState = 'cooldown';
+          e.stateTimer = 0.45 * diff.cooldownMult;
+          e.attackCooldown = (e.type === 'patricinha' ? 0.85 : 1.15) * diff.cooldownMult;
+        }
+      } else if (e.aiState === 'cooldown') {
+        e.stateTimer -= dt;
+        if (e.stateTimer <= 0) {
+          e.aiState = 'approach';
+        }
+      } else {
+        e.facing = dx >= 0 ? 1 : -1;
+        e.walkPhase += dt;
+
+        const baseSpeed =
+          e.type === 'patricinha'
+            ? 84
+            : e.type === 'skatista'
+              ? 92
+              : e.isChaser
+                ? 98
+                : e.type === 'fiscal' || e.type === 'boss_fiscal_chefe'
+                  ? 88
+                  : e.type === 'boss_motorista'
+                    ? 72
+                    : e.type === 'boss_cobrador_blindado'
+                      ? 54
+                      : e.type === 'industria' || e.type === 'tio_audio'
+                        ? 48
+                        : 58;
+        const windSlowMult = this.expressWindTimer > 0 && !e.isBoss ? 0.85 : 1;
+        const speed =
+          baseSpeed * (e.isChaser ? Math.max(1, diff.speedMult) : diff.speedMult) * windSlowMult;
+
+        if (e.type === 'vendedor' || e.type === 'tio_audio') {
+          const idealDist = e.type === 'tio_audio' ? 96 : 82;
+          if (absDx > idealDist + 18) {
+            e.x += Math.sign(dx) * speed * dt;
+          } else if (absDx < 45) {
+            e.x -= Math.sign(dx) * speed * 0.75 * dt;
+          }
+          if (absDy > 8) {
+            e.y += Math.sign(dy) * speed * 0.6 * dt;
+          }
+          if (e.attackCooldown <= 0 && absDx < 155 && absDy < 34) {
+            e.aiState = 'windup';
+            e.stateTimer = 0.42 * diff.windupMult;
+            if (e.type === 'tio_audio') {
+              e.speechText = Math.random() < 0.5 ? 'ESCUTA ESSE ZAP!' : 'SOM NO TALO!';
+            } else {
+              e.speechText = Math.random() < 0.6 ? 'Cuidado com o rapa!' : 'CHICLETE!';
+            }
+            e.speechTimer = 1.4;
+          }
+        } else if (e.type === 'skatista' && e.attackCooldown <= 0 && absDx >= 55 && absDx < 175 && absDy < 22) {
+          e.aiState = 'skateWindup';
+          e.stateTimer = 0.45 * diff.windupMult;
+          e.speechText = 'SAI DA FRENTE!';
+          e.speechTimer = 1.0;
+        } else if (
+          (e.type === 'boss_cobrador' || e.type === 'boss_cobrador_blindado' || e.type === 'boss_motorista') &&
+          e.attackCooldown <= 0 &&
+          absDx < 145 &&
+          Math.random() < 0.55
+        ) {
+          e.aiState = 'spinWindup';
+          e.stateTimer = 0.65 * diff.windupMult;
+          e.speechText = e.type === 'boss_motorista' ? 'VOLANTE TURBO!' : 'ROLETA GIRATÓRIA!';
+          e.speechTimer = 1.2;
+        } else if (
+          (e.type === 'fiscal' || e.type === 'boss_fiscal_chefe') &&
+          e.attackCooldown <= 0 &&
+          absDx > 80 &&
+          absDx < 200
+        ) {
+          e.aiState = 'windup';
+          e.stateTimer = 0.4 * diff.windupMult;
+          e.speechText = 'CADÊ O BILHETE?!';
+          e.speechTimer = 1.1;
+        } else if (
+          e.type === 'boss_motorista' &&
+          e.attackCooldown <= 0 &&
+          absDx > 65 &&
+          absDx < 205
+        ) {
+          e.aiState = 'windup';
+          e.stateTimer = 0.42 * diff.windupMult;
+          e.speechText = 'BUZINA NA ORELHA!';
+          e.speechTimer = 1.1;
+        } else {
+          if (absDx > 28) {
+            e.x += Math.sign(dx) * speed * dt;
+          }
+          if (absDy > 8) {
+            e.y += Math.sign(dy) * speed * 0.68 * dt;
+          }
+          if (absDx <= 34 && absDy <= 15 && e.attackCooldown <= 0) {
+            e.aiState = 'windup';
+            e.stateTimer = (e.type === 'patricinha' ? 0.32 : 0.44) * diff.windupMult;
+            if (e.type === 'idosa' && Math.random() < 0.65) {
+              e.speechText = 'Eu quero ir pra Lapa!';
+              e.speechTimer = 1.4;
+            } else if (e.type === 'estudante' && Math.random() < 0.65) {
+              e.speechText = 'Olha o SENAI!';
+              e.speechTimer = 1.4;
+            }
+          }
+        }
+      }
+
+      if (e.z > 0 || e.vz !== 0) {
+        e.z += e.vz * dt;
+        e.vz -= GRAVITY * dt;
+        if (e.z <= 0) {
+          e.z = 0;
+          e.vz = 0;
+        }
+      }
+
+      e.x = Math.max(20, Math.min(this.line.busLength - 28, e.x));
+      e.y = Math.max(AISLE_MIN_Y, Math.min(AISLE_MAX_Y, e.y));
+    }
+  }
+
+  private executeEnemyAttack(e: EnemyEntity) {
+    const p = this.player;
+    const dx = p.x - e.x;
+    const dy = Math.abs(p.y - e.y);
+
+    if (e.type === 'vendedor') {
+      audio.playGumSplat();
+      const clampedDx = Math.max(-105, Math.min(105, p.x - e.x));
+      const targetX = e.x + clampedDx;
+      const travelTime = 0.48;
+      this.projectiles.push({
+        id: this.nextId++,
+        kind: 'gum',
+        fromPlayer: false,
+        x: e.x + e.facing * 8,
+        y: e.y,
+        z: 20,
+        vx: (targetX - e.x) / travelTime,
+        vy: ((p.y - e.y) / travelTime) * 0.7,
+        vz: 96,
+        damage: 8,
+        life: 0.68,
+        radius: 10,
+      });
+      return;
+    }
+
+    if (e.type === 'tio_audio') {
+      audio.playSoundWave();
+      this.projectiles.push({
+        id: this.nextId++,
+        kind: 'sound_ring',
+        fromPlayer: false,
+        x: e.x + e.facing * 12,
+        y: e.y,
+        z: 20,
+        vx: e.facing * 155,
+        vy: 0,
+        vz: 0,
+        damage: 8,
+        life: 1.15,
+        radius: 14,
+      });
+      return;
+    }
+
+    if (e.type === 'boss_motorista' && Math.abs(dx) > 54) {
+      audio.playSoundWave();
+      this.projectiles.push({
+        id: this.nextId++,
+        kind: 'sound_ring',
+        fromPlayer: false,
+        x: e.x + e.facing * 14,
+        y: e.y,
+        z: 22,
+        vx: e.facing * 180,
+        vy: 0,
+        vz: 0,
+        damage: 11,
+        life: 1.25,
+        radius: 17,
+      });
+      return;
+    }
+
+    if ((e.type === 'fiscal' || e.type === 'boss_fiscal_chefe') && Math.abs(dx) > 52) {
+      audio.playWhistle();
+      this.projectiles.push({
+        id: this.nextId++,
+        kind: e.type === 'boss_fiscal_chefe' ? 'fine_ticket' : 'whistle_wave',
+        fromPlayer: false,
+        x: e.x + e.facing * 12,
+        y: e.y,
+        z: 18,
+        vx: e.facing * 175,
+        vy: 0,
+        vz: 0,
+        damage: e.type === 'boss_fiscal_chefe' ? 12 : 9,
+        life: 1.4,
+        radius: 14,
+      });
+      return;
+    }
+
+    const reach = e.isBoss ? 42 : 34;
+    if (dx * e.facing >= -6 && dx * e.facing <= reach && dy <= 16 && p.z < 22) {
+      const dmg =
+        e.type === 'boss_cobrador_blindado'
+          ? 15
+          : e.isBoss
+            ? 12
+            : e.type === 'estudante'
+              ? 11
+              : 9;
+      this.damagePlayer(dmg);
+      if (e.type === 'estudante') {
+        p.vx = e.facing * 180;
+        this.addFloatingText('EMPURRÃO!', p.x, p.y, p.z + 40, '#60a5fa');
+      }
+    }
+  }
+
+  private updateProjectiles(dt: number) {
+    const p = this.player;
+
+    for (let i = this.projectiles.length - 1; i >= 0; i--) {
+      const pr = this.projectiles[i];
+      pr.life -= dt;
+      pr.x += pr.vx * dt;
+      pr.y += pr.vy * dt;
+
+      if (pr.kind === 'gum') {
+        pr.z += pr.vz * dt;
+        pr.vz -= GRAVITY * 0.65 * dt;
+        if (pr.z <= 0) {
+          audio.playGumSplat();
+          this.hazards.push({
+            id: this.nextId++,
+            kind: 'gum_puddle',
+            x: pr.x,
+            y: Math.max(AISLE_MIN_Y + 4, Math.min(AISLE_MAX_Y - 4, pr.y)),
+            radius: 15,
+            life: 6.0,
+          });
+          this.projectiles.splice(i, 1);
+          continue;
+        }
+      }
+
+      if (pr.fromPlayer && pr.kind === 'spray_cloud') {
+        for (const e of this.enemies) {
+          if (
+            e.type === 'industria' &&
+            e.stinkActive &&
+            Math.abs(e.x - pr.x) < pr.radius &&
+            Math.abs(e.y - pr.y) < 24
+          ) {
+            e.stinkActive = false;
+            e.hitFlashTimer = 0.2;
+            p.score += 150;
+            this.registerHitChain(1);
+            this.addFloatingText('ODOR NEUTRALIZADO!', e.x, e.y, e.z + 40, '#67e8f9');
+            this.spawnParticles(e.x, e.y, 20, '#38bdf8', 14);
+          }
+        }
+      } else if (pr.fromPlayer && pr.kind === 'sound_ring') {
+        let hitSet = this.soundRingHits.get(pr.id);
+        if (!hitSet) {
+          hitSet = new Set<number>();
+          this.soundRingHits.set(pr.id, hitSet);
+        }
+        for (const e of this.enemies) {
+          if (e.hp <= 0 || hitSet.has(e.id)) continue;
+          if (Math.abs(e.x - pr.x) < pr.radius && Math.abs(e.y - pr.y) < 34) {
+            hitSet.add(e.id);
+            if (e.type === 'industria' && e.stinkActive) {
+              e.stinkActive = false;
+              this.addFloatingText('ODOR DISSIPADO!', e.x, e.y, e.z + 44, '#67e8f9');
+            }
+            e.hp -= pr.damage;
+            e.hitFlashTimer = 0.16;
+            e.aiState = 'hurt';
+            e.stateTimer = 0.36;
+            const kbDir = pr.vx >= 0 ? 1 : -1;
+            e.vx = kbDir * 155;
+            p.score += pr.damage * 2;
+            this.registerHitChain(1);
+            vibrateHit(true);
+            this.spawnHitSparks(e.x, e.y, e.z + 20, kbDir, {
+              target: e.isBoss ? 'turnstile_boss' : 'passenger',
+              bossType: e.type,
+              strong: true,
+            });
+            this.addFloatingText(`-${pr.damage}`, e.x, e.y, e.z + 34, '#38bdf8');
+            if (e.hp <= 0) {
+              this.handleEnemyDefeated(e);
+            } else {
+              this.checkBossHalfHpTaunt(e);
+            }
+          }
+        }
+      } else if (!pr.fromPlayer) {
+        if (
+          Math.abs(pr.x - p.x) < pr.radius &&
+          Math.abs(pr.y - p.y) < 16 &&
+          Math.abs(pr.z - (p.z + 14)) < 18
+        ) {
+          if (p.anim === 'bagGuard') {
+            this.triggerBagCounterSpin(true);
+            this.projectiles.splice(i, 1);
+            continue;
+          }
+          if (p.anim === 'bagSpin') {
+            this.spawnParticles(pr.x, pr.y, pr.z, '#38bdf8', 6);
+            this.projectiles.splice(i, 1);
+            continue;
+          }
+          this.damagePlayer(pr.damage);
+          if (pr.kind === 'gum') {
+            p.stickySlowTimer = 2.0;
+          }
+          this.projectiles.splice(i, 1);
+          continue;
+        }
+      }
+
+      if (pr.life <= 0) {
+        this.soundRingHits.delete(pr.id);
+        this.projectiles.splice(i, 1);
+      }
+    }
+  }
+
+  private updateHazards(dt: number) {
+    const p = this.player;
+    for (let i = this.hazards.length - 1; i >= 0; i--) {
+      const h = this.hazards[i];
+      h.life -= dt;
+      if (h.life <= 0) {
+        this.hazards.splice(i, 1);
+        continue;
+      }
+      if (p.z < 4 && Math.abs(p.x - h.x) < h.radius && Math.abs(p.y - h.y) < 11) {
+        if (p.stickySlowTimer <= 0.2) {
+          p.stickySlowTimer = 1.6;
+        }
+      }
+    }
+  }
+
+  private updateDrops(dt: number) {
+    const p = this.player;
+    for (let i = this.drops.length - 1; i >= 0; i--) {
+      const d = this.drops[i];
+      d.life -= dt;
+      d.bobPhase += dt;
+      if (d.z > 0 || d.vz !== 0) {
+        d.z += d.vz * dt;
+        d.vz -= GRAVITY * dt;
+        if (d.z <= 0) {
+          d.z = 0;
+          d.vz = 0;
+        }
+      }
+
+      if (Math.abs(d.x - p.x) < 22 && Math.abs(d.y - p.y) < 18 && p.z < 24) {
+        this.collectItem(d);
+        this.drops.splice(i, 1);
+        continue;
+      }
+
+      if (d.life <= 0) {
+        this.drops.splice(i, 1);
+      }
+    }
+  }
+
+  private collectItem(d: DropItem) {
+    const p = this.player;
+    switch (d.type) {
+      case 'bengala':
+        p.caneCharges = 6;
+        this.caneHintTimer = 4.5;
+        audio.playPickup();
+        this.addFloatingText('BENGALA (6)', d.x, d.y, 28, '#fbbf24');
+        this.pushCombatLog('Bengala equipada (6 cargas)', 'gold', 3.8);
+        break;
+      case 'chocolate':
+        p.hp = Math.min(p.maxHp, p.hp + 30);
+        audio.playHeal();
+        this.addFloatingText('+30 HP', d.x, d.y, 28, '#4ade80');
+        this.pushCombatLog('Chocolate (+30 HP)', 'emerald', 3.6);
+        break;
+      case 'creditos':
+        p.credits += 2;
+        audio.playPickup();
+        this.addFloatingText('+2 CRÉDITOS', d.x, d.y, 28, '#60a5fa');
+        this.pushCombatLog('+2 Créditos coletados', 'cyan', 3.6);
+        break;
+      case 'desodorante':
+        p.deodorantCount = Math.min(4, p.deodorantCount + 1);
+        audio.playPickup();
+        this.addFloatingText('+1 DESODORANTE', d.x, d.y, 28, '#22d3ee');
+        this.pushCombatLog('Desodorante coletado', 'cyan', 3.6);
+        break;
+      case 'maquiagem':
+        p.makeupShieldTimer = 10 + this.shopLoadout.buffDurationBonus;
+        p.shieldHits = 5;
+        p.score += 250;
+        audio.playMakeup();
+        this.addFloatingText('ESCUDO (5) +250', d.x, d.y, 28, '#38bdf8');
+        this.pushCombatLog('Escudo de mochila ativo!', 'cyan', 4.0);
+        break;
+      case 'cafezinho':
+        p.hp = Math.min(p.maxHp, p.hp + 20);
+        p.specialEnergy = Math.min(100, p.specialEnergy + 40);
+        p.speedBoostTimer = Math.max(p.speedBoostTimer, 5);
+        audio.playHeal();
+        this.addFloatingText('CAFÉ! +20 HP +VEL', d.x, d.y, 28, '#fbbf24');
+        this.pushCombatLog('Cafezinho (+20 HP & Vel.)', 'gold', 3.8);
+        break;
+      case 'bilhete_dourado':
+        p.credits += 4;
+        p.score += 200;
+        audio.playValidate();
+        this.addFloatingText('BILHETE DOURADO! +4 CRÉD', d.x, d.y, 28, '#facc15');
+        this.pushCombatLog('Bilhete Dourado (+4 créd.)', 'gold', 4.2);
+        break;
+    }
+    this.spawnParticles(d.x, d.y, 12, '#fde047', 10);
+    this.pushHudSnapshot();
+  }
+
+  private updateParticles(dt: number) {
+    for (let i = this.particles.length - 1; i >= 0; i--) {
+      const pt = this.particles[i];
+      pt.life -= dt;
+      pt.prevX = pt.x;
+      pt.prevY = pt.y;
+      pt.prevZ = pt.z;
+
+      const dragFactor = pt.drag ? Math.exp(-pt.drag * dt) : 1;
+      pt.vx *= dragFactor;
+      pt.vy *= dragFactor;
+      pt.x += pt.vx * dt;
+      pt.y += pt.vy * dt;
+      pt.z += pt.vz * dt;
+      pt.vz -= GRAVITY * (pt.gravityScale ?? 0.7) * dt;
+
+      if (pt.z <= 0) {
+        pt.z = 0;
+        if (pt.bounce && Math.abs(pt.vz) > 28) {
+          pt.vz = Math.abs(pt.vz) * pt.bounce;
+          pt.vx *= 0.82;
+          pt.vy *= 0.82;
+        } else {
+          pt.vz = 0;
+        }
+      }
+      if (pt.life <= 0) this.particles.splice(i, 1);
+    }
+
+    for (let i = this.floatingTexts.length - 1; i >= 0; i--) {
+      const ft = this.floatingTexts[i];
+      ft.life -= dt;
+      ft.z += 22 * dt;
+      if (ft.life <= 0) this.floatingTexts.splice(i, 1);
+    }
+  }
+
+  private updateCamera(dt: number) {
+    const bounds = this.getActiveWaveBounds();
+    const targetCamX = this.player.x - INTERNAL_WIDTH * 0.36;
+    const minCam = bounds.minX;
+    const maxCam = Math.max(minCam, bounds.maxX - INTERNAL_WIDTH);
+    const clampedTarget = Math.max(minCam, Math.min(maxCam, targetCamX));
+    this.camX += (clampedTarget - this.camX) * Math.min(1, dt * 8);
+  }
+
+  private handleReachExitDoor() {
+    this.heldKeys.clear();
+    if (!this.damageTakenThisLine) {
+      this.unlockAchievement('zero_damage_line');
+    }
+    if (!this.ticketValidated) {
+      this.skippedValidationAnyLine = true;
+    }
+
+    if (this.currentLineIdx === BUS_LINES.length - 1) {
+      if (this.ticketValidated && !this.skippedValidationAnyLine) {
+        this.unlockAchievement('all_validated');
+      }
+      this.player.score += 1000;
+      this.player.anim = 'victory';
+      this.player.animTimer = 0;
+      this.player.vx = 0;
+      this.player.vy = 0;
+      this.player.vz = 0;
+      this.player.z = 0;
+      this.spawnParticles(this.player.x, this.player.y, 26, '#facc15', 14);
+      this.spawnParticles(this.player.x, this.player.y, 22, '#34d399', 10);
+      this.spawnParticles(this.player.x, this.player.y, 24, '#38bdf8', 8);
+      this.gameState = 'VICTORY_SCENE';
+      audio.playVictory(this.line.lineNumber);
+      this.pushHudSnapshot();
+    } else {
+      const willFiscalChase = !this.ticketValidated;
+      this.fiscalChasing = willFiscalChase;
+      this.transitionPerksBought.clear();
+      this.gameState = 'LINE_TRANSITION';
+      audio.playPickup();
+      this.pushHudSnapshot();
+    }
+  }
+
+  private pushHudSnapshot() {
+    const bosses: BossHudInfo[] = this.enemies
+      .filter((e) => e.isBoss && e.hp > 0)
+      .map((b) => ({
+        name: b.name,
+        hp: Math.max(0, b.hp),
+        maxHp: b.maxHp,
+        guardHp: b.guardMax > 0 ? Math.max(0, b.guardHp) : undefined,
+        guardMax: b.guardMax > 0 ? b.guardMax : undefined,
+        guardBroken: b.guardBrokenTimer > 0,
+      }));
+
+    const activeWave = this.waves.find((w) => w.triggered && !w.cleared);
+    const goArrowActive = this.gameMode === 'campaign' && !activeWave && this.gameState === 'PLAYING';
+    const nextLineDef = BUS_LINES[this.currentLineIdx + 1];
+    const nearSeat = this.getEmptySeatUnderPlayer(158);
+    const nearEmptySeat = Boolean(nearSeat && !this.usedSeatSlots.has(nearSeat.slot));
+    const achievementProgress = loadAchievementProgress();
+    const startX = 48;
+    const routeSpan = Math.max(1, this.line.exitDoorX - 18 - startX);
+    const routeProgress = Math.max(0, Math.min(1, (this.player.x - startX) / routeSpan));
+    const turnstileProgress = Math.max(
+      0,
+      Math.min(1, (this.line.turnstileX - startX) / routeSpan)
+    );
+
+    this.onHudUpdate({
+      gameMode: this.gameMode,
+      gameState: this.gameState,
+      lineNumber: this.line.lineNumber,
+      lineCode: this.line.code,
+      lineTitle: this.line.title,
+      hp: Math.max(0, this.player.hp),
+      maxHp: this.player.maxHp,
+      score: this.player.score,
+      hitsLanded: this.player.hitsLanded,
+      bestHitChain: this.player.bestHitChain,
+      enemiesDefeated: this.player.enemiesDefeated,
+      comboStreak: this.player.comboStreak,
+      comboMultiplier: this.player.comboMultiplier,
+      credits: this.player.credits,
+      ticketCost: this.getEffectiveTicketCost(),
+      ticketValidated: this.ticketValidated,
+      caneCharges: this.player.caneCharges,
+      deodorantCount: this.player.deodorantCount,
+      makeupShieldTimer: this.player.makeupShieldTimer,
+      shieldHits: this.player.shieldHits,
+      bagSkillCooldown: this.player.bagSkillCooldown,
+      strengthBuffTimer: this.player.strengthBuffTimer,
+      rageTimer: this.player.rageTimer,
+      rageNotificationTimer: this.player.rageNotificationTimer,
+      specialEnergy: this.player.specialEnergy,
+      speedBoostTimer: this.player.speedBoostTimer,
+      stickySlowTimer: this.player.stickySlowTimer,
+      fiscalChasing: this.fiscalChasing,
+      nearValidator: this.isNearValidator(),
+      nearStopButton: this.isNearStopButton(),
+      stopButtonReady: this.stopButtonCooldown <= 0,
+      nearEmptySeat,
+      seatRestProgress: Math.min(1, this.seatRestHoldTimer / 1.1),
+      expressWindTimer: this.expressWindTimer,
+      turnstileCleared: this.turnstileCleared,
+      goArrowActive,
+      routeProgress,
+      turnstileProgress,
+      infiniteWave: this.infiniteWave,
+      infiniteTimeLeft: this.infiniteTimeLeft,
+      bosses,
+      alertMessage: this.alertMessage,
+      badges: Array.from(this.runBadges),
+      activeAchievementToast: this.activeAchievementToast,
+      screenNotifications: this.screenNotifications.map(({ id, text, tone, xPct, yPct }) => ({
+        id,
+        text,
+        tone,
+        xPct,
+        yPct,
+      })),
+      combatLog: this.combatLog.map(({ id, text, tone }) => ({
+        id,
+        text,
+        tone,
+      })),
+      achievementStats: {
+        unlockedCount: achievementProgress.unlockedIds.length,
+        totalCount: ALLOWED_BADGE_IDS.length,
+        totalDefeated: achievementProgress.totalDefeated,
+      },
+      skinStyle: this.shopLoadout.equippedSkin,
+      lineSummary:
+        this.gameState === 'LINE_TRANSITION'
+          ? {
+              completedLine: this.line.lineNumber,
+              nextLine: nextLineDef?.lineNumber as 2 | 3 | undefined,
+              nextLineTitle: nextLineDef?.title,
+              ticketValidated: this.ticketValidated,
+              fiscalAlert: this.fiscalChasing,
+              score: this.player.score,
+              purchasedPerks: Array.from(this.transitionPerksBought),
+            }
+          : undefined,
+    });
+  }
+
+  private render() {
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    ctx.scale(RENDER_SCALE, RENDER_SCALE);
+
+    if (this.shakeTimer > 0) {
+      const sx = (Math.random() - 0.5) * 2 * this.shakeMag;
+      const sy = (Math.random() - 0.5) * 2 * this.shakeMag;
+      ctx.translate(sx, sy);
+    }
+
+    if (this.gameState === 'INTRO_SCENE' || this.gameState === 'VICTORY_SCENE') {
+      ctx.restore();
+      return;
+    }
+
+    const activeFlicker =
+      this.comboFlickerTimer > 0
+        ? this.comboFlickerIntensity * Math.min(1, this.comboFlickerTimer / 0.45)
+        : 0;
+
+    const routeProgress = Math.min(
+      1,
+      Math.max(0, this.camX / Math.max(1, this.line.busLength - INTERNAL_WIDTH))
+    );
+    const graffitiProgress = Math.min(
+      1,
+      (this.line.lineNumber - 1) * 0.25 +
+        routeProgress * 0.45 +
+        this.player.enemiesDefeated * 0.025
+    );
+
+    const turnstileSpinProgress =
+      this.turnstileSpinTimer > 0
+        ? 1 - this.turnstileSpinTimer / 0.72
+        : this.turnstileCrossed
+          ? 1
+          : 0;
+
+    // 1. 16-Bit Bus Interior
+    drawVectorBusInterior(
+      ctx,
+      this.line,
+      this.camX,
+      this.simTime,
+      this.turnstileCleared,
+      this.ticketValidated,
+      this.usedSeatSlots,
+      this.expressWindTimer > 0,
+      activeFlicker,
+      graffitiProgress,
+      this.graffitiSeed,
+      turnstileSpinProgress,
+      this.stopButtonCooldown <= 0
+    );
+
+    // 2. Glossy Sticky Gum Puddles
+    for (const h of this.hazards) {
+      const hx = h.x - this.camX;
+      const hy = h.y;
+      ctx.fillStyle = '#ec4899';
+      ctx.strokeStyle = '#831843';
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.ellipse(hx, hy, 13, 5, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = '#fbcfe8';
+      ctx.beginPath();
+      ctx.ellipse(hx - 3, hy - 1.5, 4, 1.5, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // 3. Y-sorted entities
+    type Drawable = { y: number; draw: () => void };
+    const drawables: Drawable[] = [];
+
+    for (const d of this.drops) {
+      drawables.push({
+        y: d.y,
+        draw: () => drawVectorDropItem(ctx, d.type, d.x - this.camX, d.y, d.z, d.bobPhase),
+      });
+    }
+
+    for (const e of this.enemies) {
+      drawables.push({
+        y: e.y,
+        draw: () => {
+          const sx = e.x - this.camX;
+          drawVectorEnemy(
+            ctx,
+            e.type,
+            sx,
+            e.y,
+            e.z,
+            e.facing,
+            e.aiState,
+            e.walkPhase,
+            e.hasFrontBarrier,
+            e.stinkActive,
+            e.hitFlashTimer > 0,
+            this.simTime
+          );
+          if (!e.isBoss && (e.hp < e.maxHp || e.guardMax > 0)) {
+            const bw = 26;
+            const bx = sx - bw / 2;
+            const by = e.y - e.z - (e.guardMax > 0 ? 48 : 44);
+            ctx.fillStyle = '#0f172a';
+            ctx.beginPath();
+            ctx.roundRect(bx - 1, by - 1, bw + 2, e.guardMax > 0 ? 9.5 : 6, 2);
+            ctx.fill();
+            ctx.fillStyle = e.stinkActive ? '#84cc16' : '#ef4444';
+            ctx.beginPath();
+            ctx.roundRect(bx, by, (e.hp / e.maxHp) * bw, 4, 1.5);
+            ctx.fill();
+
+            if (e.guardMax > 0) {
+              const gy = by + 5;
+              const segW = (bw - (e.guardMax - 1)) / e.guardMax;
+              for (let s = 0; s < e.guardMax; s++) {
+                const segX = bx + s * (segW + 1);
+                if (e.guardBrokenTimer > 0) {
+                  ctx.fillStyle = 'rgba(251, 191, 36, 0.25)';
+                } else {
+                  ctx.fillStyle = s < e.guardHp ? '#38bdf8' : '#1e293b';
+                }
+                ctx.fillRect(segX, gy, segW, 2.5);
+              }
+            }
+          }
+          if (e.speechTimer > 0 && e.speechText) {
+            ctx.save();
+            ctx.font = e.isBoss ? 'bold 7px sans-serif' : 'bold 6.5px sans-serif';
+            const tw = ctx.measureText(e.speechText).width;
+            const padX = e.isBoss ? 6 : 4;
+            const boxH = e.isBoss ? 14 : 12;
+            const boxW = tw + padX * 2;
+            const bx = Math.max(6, Math.min(INTERNAL_WIDTH - boxW - 6, sx - boxW / 2));
+            const ty = e.y - e.z - (e.isBoss ? 66 : 54);
+
+            // Subtle comic shadow for boss dialogue boxes
+            if (e.isBoss) {
+              ctx.fillStyle = '#090d16';
+              ctx.beginPath();
+              ctx.roundRect(bx + 1.5, ty - 8 + 1.5, boxW, boxH, 4.5);
+              ctx.fill();
+            }
+
+            ctx.fillStyle = e.isBoss ? '#fef9c3' : '#ffffff';
+            ctx.strokeStyle = '#0f172a';
+            ctx.lineWidth = e.isBoss ? 1.8 : 1.5;
+            ctx.beginPath();
+            ctx.roundRect(bx, ty - 8, boxW, boxH, 4.5);
+            ctx.fill();
+            ctx.stroke();
+
+            // Comic pointer tail pointing toward character head
+            if (e.isBoss) {
+              const tailX = Math.max(bx + 8, Math.min(bx + boxW - 8, sx));
+              ctx.fillStyle = '#fef9c3';
+              ctx.beginPath();
+              ctx.moveTo(tailX - 3.5, ty - 8 + boxH - 0.5);
+              ctx.lineTo(tailX, ty - 8 + boxH + 4.5);
+              ctx.lineTo(tailX + 3.5, ty - 8 + boxH - 0.5);
+              ctx.closePath();
+              ctx.fill();
+              ctx.stroke();
+            }
+
+            ctx.fillStyle = '#0f172a';
+            ctx.fillText(e.speechText, bx + padX, ty + (e.isBoss ? 1.5 : 0.5));
+            ctx.restore();
+          }
+        },
+      });
+    }
+
+    drawables.push({
+      y: this.player.y,
+      draw: () =>
+        drawVectorPlayer(
+          ctx,
+          this.player.x - this.camX,
+          this.player.y,
+          this.player.z,
+          this.player.facing,
+          this.player.anim,
+          this.player.animTimer,
+          this.player.caneCharges > 0,
+          this.player.makeupShieldTimer > 0,
+          this.player.hitFlashTimer > 0,
+          this.player.strengthBuffTimer > 0,
+          this.player.rageTimer > 0,
+          this.simTime,
+          this.shopLoadout.equippedSkin
+        ),
+    });
+
+    drawables.sort((a, b) => a.y - b.y);
+    for (const item of drawables) {
+      item.draw();
+    }
+
+    // 4. Projectiles
+    for (const pr of this.projectiles) {
+      const pxX = pr.x - this.camX;
+      const pxY = pr.y - pr.z;
+      if (pr.kind === 'gum') {
+        ctx.fillStyle = '#ec4899';
+        ctx.strokeStyle = '#0f172a';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(pxX, pxY, 4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+      } else if (pr.kind === 'spray_cloud') {
+        ctx.fillStyle = 'rgba(34, 211, 238, 0.45)';
+        ctx.beginPath();
+        ctx.ellipse(pxX, pxY, 18, 12, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = 'rgba(207, 250, 254, 0.75)';
+        ctx.beginPath();
+        ctx.ellipse(pxX, pxY, 10, 6, 0, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (pr.kind === 'whistle_wave') {
+        ctx.strokeStyle = '#facc15';
+        ctx.lineWidth = 2.2;
+        ctx.beginPath();
+        ctx.arc(pxX, pxY, 7, -0.9, 0.9);
+        ctx.stroke();
+      } else if (pr.kind === 'fine_ticket') {
+        ctx.fillStyle = '#f8fafc';
+        ctx.strokeStyle = '#0f172a';
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        ctx.roundRect(pxX - 5, pxY - 3, 10, 6, 1.5);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = '#ef4444';
+        ctx.fillRect(pxX - 3, pxY - 1, 6, 2);
+      } else if (pr.kind === 'sound_ring') {
+        ctx.save();
+        if (pr.fromPlayer) {
+          const pulse = 0.55 + Math.sin(this.simTime * 28) * 0.2;
+          ctx.strokeStyle = `rgba(56, 189, 248, ${pulse.toFixed(2)})`;
+          ctx.lineWidth = 3;
+          ctx.beginPath();
+          ctx.arc(pxX, pxY, Math.min(24, pr.radius * 0.55), 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.strokeStyle = '#fde047';
+          ctx.lineWidth = 1.6;
+          ctx.beginPath();
+          ctx.arc(pxX, pxY, Math.min(16, pr.radius * 0.35), 0, Math.PI * 2);
+          ctx.stroke();
+        } else {
+          ctx.strokeStyle = '#f97316';
+          ctx.lineWidth = 2.4;
+          ctx.beginPath();
+          ctx.arc(pxX, pxY, 10, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.strokeStyle = '#fde047';
+          ctx.lineWidth = 1.4;
+          ctx.beginPath();
+          ctx.arc(pxX, pxY, 5, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+    }
+
+    // 5. Crisp 16-bit pixel particles & metallic sparks + yellow-white impact flashes
+    for (const pt of this.particles) {
+      drawPixelParticle(ctx, pt, this.camX);
+    }
+
+    for (const fl of this.impactFlashes) {
+      const progress = 1 - Math.max(0, Math.min(1, fl.life / fl.maxLife));
+      drawImpactFlash(ctx, fl.x - this.camX, fl.y, progress, fl.strong);
+    }
+
+    // 5b. Boss Finisher KO Shockwaves & Debris
+    for (const fx of this.bossFinisherEffects) {
+      const progress = 1 - Math.max(0, Math.min(1, fx.life / fx.maxLife));
+      drawBossFinisherEffect(
+        ctx,
+        fx.x - this.camX,
+        fx.y,
+        fx.z,
+        progress,
+        fx.label,
+        fx.primaryColor,
+        fx.secondaryColor,
+        fx.style
+      );
+    }
+
+    // 6. Foreground bus handrails
+    drawVectorForegroundPoles(ctx, this.camX);
+
+    // 7. Pre-turnstile validator, STOP button & exit door prompts in world space
+    {
+      const bounce = Math.sin(this.simTime * 6) * 2.5;
+      if (!this.ticketValidated) {
+        const vx = this.line.validatorX - this.camX;
+        if (vx > 0 && vx < INTERNAL_WIDTH) {
+          const cost = this.getEffectiveTicketCost();
+          ctx.fillStyle = '#0f172a';
+          ctx.strokeStyle = '#facc15';
+          ctx.lineWidth = 1.8;
+          ctx.beginPath();
+          ctx.roundRect(vx - 34, 82 + bounce, 68, 14, 4);
+          ctx.fill();
+          ctx.stroke();
+          ctx.fillStyle = '#facc15';
+          ctx.font = 'bold 6px sans-serif';
+          ctx.fillText(`VALIDAR (${cost})`, vx - 23, 91 + bounce);
+        }
+      }
+
+      if (this.stopButtonCooldown <= 0 && Math.abs(this.player.x - this.line.stopCordX) < 85) {
+        const sx = this.line.stopCordX - this.camX;
+        if (sx > 12 && sx < INTERNAL_WIDTH - 12) {
+          ctx.fillStyle = '#0f172a';
+          ctx.strokeStyle = '#ef4444';
+          ctx.lineWidth = 1.6;
+          ctx.beginPath();
+          ctx.roundRect(sx - 24, 74 + bounce, 48, 13, 3.5);
+          ctx.fill();
+          ctx.stroke();
+          ctx.fillStyle = '#fef08a';
+          ctx.font = 'bold 6px sans-serif';
+          ctx.fillText('STOP', sx - 9, 82.5 + bounce);
+        }
+      }
+
+      if (this.turnstileCleared && this.gameMode === 'campaign') {
+        const dxDoor = this.line.exitDoorX - this.camX;
+        if (dxDoor > 0 && dxDoor < INTERNAL_WIDTH) {
+          ctx.fillStyle = '#059669';
+          ctx.strokeStyle = '#34d399';
+          ctx.lineWidth = 1.6;
+          ctx.beginPath();
+          ctx.roundRect(dxDoor - 24, 30 + bounce, 48, 13, 4);
+          ctx.fill();
+          ctx.stroke();
+          ctx.fillStyle = '#ffffff';
+          ctx.font = 'bold 6px sans-serif';
+          ctx.fillText('SAÍDA ->', dxDoor - 15, 38.5 + bounce);
+        }
+      }
+    }
+
+    // 8. World-space seat rest progress bar (no button instruction boxes)
+    if (this.gameState === 'PLAYING' && this.line.lineNumber === 1) {
+      const p = this.player;
+      const nearUnusedSeat = this.getEmptySeatUnderPlayer(158);
+      if (nearUnusedSeat && !this.usedSeatSlots.has(nearUnusedSeat.slot) && this.seatRestHoldTimer > 0) {
+        const px = p.x - this.camX;
+        const py = p.y - p.z - 48;
+        const pct = Math.min(1, this.seatRestHoldTimer / 1.1);
+        ctx.fillStyle = '#0f172a';
+        ctx.strokeStyle = '#34d399';
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        ctx.roundRect(px - 18, py - 5, 36, 6, 2.5);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = '#34d399';
+        ctx.beginPath();
+        ctx.roundRect(px - 16.5, py - 3.5, 33 * pct, 3, 1.5);
+        ctx.fill();
+      }
+    }
+
+    // 9. Floating damage / pickup texts
+    ctx.font = 'bold 7.5px sans-serif';
+    for (const ft of this.floatingTexts) {
+      const fx = ft.x - this.camX;
+      const fy = ft.y - ft.z;
+      ctx.strokeStyle = '#0f172a';
+      ctx.lineWidth = 2.6;
+      ctx.strokeText(ft.text, fx - 14, fy);
+      ctx.fillStyle = ft.color;
+      ctx.fillText(ft.text, fx - 14, fy);
+    }
+
+    // 9. Animated Jetpack Joyride-style "SIGA" badge (campaign only)
+    const activeWave = this.waves.find((w) => w.triggered && !w.cleared);
+    if (
+      this.gameMode === 'campaign' &&
+      !activeWave &&
+      this.gameState === 'PLAYING' &&
+      Math.floor(this.simTime * 4) % 2 === 0
+    ) {
+      ctx.save();
+      ctx.fillStyle = '#facc15';
+      ctx.strokeStyle = '#0f172a';
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      ctx.roundRect(INTERNAL_WIDTH - 64, 62, 52, 22, 6);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = '#0f172a';
+      ctx.font = 'bold 10px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('SIGA', INTERNAL_WIDTH - 38, 73.5);
+      ctx.restore();
+    }
+
+    // 10. Old city bus fluorescent light flicker (subtle ambient + intensified on combos & short circuit)
+    if (this.gameState === 'PLAYING') {
+      const stutter =
+        Math.sin(this.simTime * 46) * 0.55 + Math.sin(this.simTime * 79 + 1.3) * 0.45;
+      const ambientDip = Math.sin(this.simTime * 3.1) > 0.955 ? 0.045 : 0;
+      if (this.shortCircuitTimer > 0) {
+        const elecAlpha = Math.sin(this.simTime * 55) > 0 ? 0.16 : 0.05;
+        ctx.fillStyle = `rgba(56, 189, 248, ${elecAlpha.toFixed(3)})`;
+        ctx.fillRect(-12, -12, INTERNAL_WIDTH + 24, INTERNAL_HEIGHT + 24);
+      } else if (activeFlicker > 0.05) {
+        if (stutter < -0.1) {
+          const dimAlpha = Math.min(0.18, 0.04 + activeFlicker * 0.13);
+          ctx.fillStyle = `rgba(9, 13, 22, ${dimAlpha.toFixed(3)})`;
+          ctx.fillRect(-12, -12, INTERNAL_WIDTH + 24, INTERNAL_HEIGHT + 24);
+        } else if (stutter > 0.35) {
+          const buzzAlpha = Math.min(0.11, 0.02 + activeFlicker * 0.08);
+          ctx.fillStyle = `rgba(224, 242, 254, ${buzzAlpha.toFixed(3)})`;
+          ctx.fillRect(-12, -12, INTERNAL_WIDTH + 24, INTERNAL_HEIGHT + 24);
+        }
+      } else if (ambientDip > 0) {
+        ctx.fillStyle = `rgba(9, 13, 22, ${ambientDip.toFixed(3)})`;
+        ctx.fillRect(-12, -12, INTERNAL_WIDTH + 24, INTERNAL_HEIGHT + 24);
+      }
+    }
+
+    // 10b. Temporary overdrive color tint when combo multiplier exceeds 5x
+    if (this.comboTintTimer > 0) {
+      const progress = Math.min(1, this.comboTintTimer / 0.65);
+      const fillAlpha = progress * 0.28;
+      ctx.fillStyle = `rgba(249, 115, 22, ${fillAlpha.toFixed(3)})`;
+      ctx.fillRect(-12, -12, INTERNAL_WIDTH + 24, INTERNAL_HEIGHT + 24);
+    }
+
+    // 10c. Subtle Matrix bullet-time tint & concentric ripple during slow-mo boss flying kick
+    if (this.bossBulletTimeTimer > 0) {
+      const btAlpha = Math.min(1, this.bossBulletTimeTimer / 0.25) * 0.14;
+      ctx.fillStyle = `rgba(16, 185, 129, ${btAlpha.toFixed(3)})`;
+      ctx.fillRect(-12, -12, INTERNAL_WIDTH + 24, INTERNAL_HEIGHT + 24);
+      const pScreenX = this.player.x - this.camX;
+      const pScreenY = this.player.y - this.player.z - 18;
+      const waveProg = (this.simTime * 5) % 1;
+      ctx.save();
+      ctx.strokeStyle = `rgba(74, 222, 128, ${(0.45 * (1 - waveProg)).toFixed(2)})`;
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.ellipse(pScreenX, pScreenY, 26 + waveProg * 42, 16 + waveProg * 24, -0.2, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // 11. Boss Finisher KO screen flash & dramatic arcade edge vignette
+    if (this.bossKoFlashTimer > 0) {
+      const progress = Math.min(1, this.bossKoFlashTimer / 0.45);
+      const flashAlpha = progress * 0.42;
+      ctx.fillStyle = `rgba(254, 240, 138, ${flashAlpha.toFixed(3)})`;
+      ctx.fillRect(-12, -12, INTERNAL_WIDTH + 24, INTERNAL_HEIGHT + 24);
+    }
+
+    // 12. Full-screen K.O. animation overlay across entire canvas (includes thumbs-up player!)
+    if (this.bossKoOverlay) {
+      const progress =
+        1 - Math.max(0, Math.min(1, this.bossKoOverlay.life / this.bossKoOverlay.maxLife));
+      drawFullScreenKoAnimation(
+        ctx,
+        INTERNAL_WIDTH,
+        INTERNAL_HEIGHT,
+        progress,
+        this.bossKoOverlay.primaryColor,
+        this.bossKoOverlay.secondaryColor,
+        this.bossKoOverlay.style,
+        this.shopLoadout.equippedSkin
+      );
+    }
+
+    ctx.restore();
+    this.postProcessor.present(this.simTime, activeFlicker);
+  }
+}

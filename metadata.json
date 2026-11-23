@@ -1,0 +1,8 @@
+{
+  "name": "Horário de Pico: Briga no Busão",
+  "description": "Beat'em up 2.5D retrô em pixel art dentro de três linhas de ônibus urbano lotado. Enfrente passageiros hostis, valide seu bilhete e derrote os chefes da catraca.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

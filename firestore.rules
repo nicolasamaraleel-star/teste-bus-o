@@ -1,0 +1,332 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidBadgesList(badges) {
+      return badges is list
+        && badges.size() <= 10
+        && badges.hasOnly([
+          'rage_10x',
+          'all_validated',
+          'zero_damage_line',
+          'boss_rage_ko',
+          'ninja_mochila',
+          'acrobata_busao',
+          'derrotar_50',
+          'chegar_linha_3',
+          'validar_sem_dano',
+          'rush_onda_5'
+        ])
+        && (badges.size() == 0 || badges[0] is string);
+    }
+
+    function isValidUserProfile(data, userId) {
+      return data.keys().hasAll([
+          'uid',
+          'displayName',
+          'bestScore',
+          'highestLine',
+          'totalEnemiesDefeated',
+          'gamesPlayed',
+          'badges',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'uid',
+          'displayName',
+          'bestScore',
+          'highestLine',
+          'totalEnemiesDefeated',
+          'gamesPlayed',
+          'bestRushScore',
+          'bestRushWave',
+          'bestHitChain',
+          'badges',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.uid is string
+        && data.uid == userId
+        && isValidId(data.uid)
+        && data.displayName is string
+        && data.displayName.size() >= 1
+        && data.displayName.size() <= 40
+        && data.bestScore is int
+        && data.bestScore >= 0
+        && data.bestScore <= 9999999
+        && data.highestLine is int
+        && data.highestLine >= 1
+        && data.highestLine <= 3
+        && data.totalEnemiesDefeated is int
+        && data.totalEnemiesDefeated >= 0
+        && data.totalEnemiesDefeated <= 9999999
+        && data.gamesPlayed is int
+        && data.gamesPlayed >= 0
+        && data.gamesPlayed <= 999999
+        && (!('bestRushScore' in data) || (data.bestRushScore is int && data.bestRushScore >= 0 && data.bestRushScore <= 9999999))
+        && (!('bestRushWave' in data) || (data.bestRushWave is int && data.bestRushWave >= 1 && data.bestRushWave <= 9999))
+        && (!('bestHitChain' in data) || (data.bestHitChain is int && data.bestHitChain >= 0 && data.bestHitChain <= 99999))
+        && isValidBadgesList(data.badges)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidLeaderboardEntry(data, userId) {
+      return data.keys().hasAll([
+          'uid',
+          'playerName',
+          'bestScore',
+          'highestLine',
+          'enemiesDefeated',
+          'badges',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'uid',
+          'playerName',
+          'bestScore',
+          'highestLine',
+          'enemiesDefeated',
+          'bestHitChain',
+          'badges',
+          'updatedAt'
+        ])
+        && data.uid is string
+        && data.uid == userId
+        && isValidId(data.uid)
+        && data.playerName is string
+        && data.playerName.size() >= 1
+        && data.playerName.size() <= 40
+        && data.bestScore is int
+        && data.bestScore >= 0
+        && data.bestScore <= 9999999
+        && data.highestLine is int
+        && data.highestLine >= 1
+        && data.highestLine <= 3
+        && data.enemiesDefeated is int
+        && data.enemiesDefeated >= 0
+        && data.enemiesDefeated <= 999999
+        && (!('bestHitChain' in data) || (data.bestHitChain is int && data.bestHitChain >= 0 && data.bestHitChain <= 99999))
+        && isValidBadgesList(data.badges)
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidRushLeaderboardEntry(data, userId) {
+      return data.keys().hasAll([
+          'uid',
+          'playerName',
+          'bestScore',
+          'bestWave',
+          'enemiesDefeated',
+          'badges',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'uid',
+          'playerName',
+          'bestScore',
+          'bestWave',
+          'enemiesDefeated',
+          'bestHitChain',
+          'badges',
+          'updatedAt'
+        ])
+        && data.uid is string
+        && data.uid == userId
+        && isValidId(data.uid)
+        && data.playerName is string
+        && data.playerName.size() >= 1
+        && data.playerName.size() <= 40
+        && data.bestScore is int
+        && data.bestScore >= 0
+        && data.bestScore <= 9999999
+        && data.bestWave is int
+        && data.bestWave >= 1
+        && data.bestWave <= 9999
+        && data.enemiesDefeated is int
+        && data.enemiesDefeated >= 0
+        && data.enemiesDefeated <= 999999
+        && (!('bestHitChain' in data) || (data.bestHitChain is int && data.bestHitChain >= 0 && data.bestHitChain <= 99999))
+        && isValidBadgesList(data.badges)
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidGameRun(data, userId) {
+      return data.keys().hasAll([
+          'uid',
+          'score',
+          'lineReached',
+          'enemiesDefeated',
+          'victory',
+          'badges',
+          'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'uid',
+          'score',
+          'lineReached',
+          'enemiesDefeated',
+          'victory',
+          'gameMode',
+          'waveReached',
+          'bestHitChain',
+          'badges',
+          'createdAt'
+        ])
+        && data.uid is string
+        && data.uid == userId
+        && isValidId(data.uid)
+        && data.score is int
+        && data.score >= 0
+        && data.score <= 9999999
+        && data.lineReached is int
+        && data.lineReached >= 1
+        && data.lineReached <= 3
+        && data.enemiesDefeated is int
+        && data.enemiesDefeated >= 0
+        && data.enemiesDefeated <= 999999
+        && data.victory is bool
+        && (!('gameMode' in data) || (data.gameMode is string && data.gameMode in ['campaign', 'infinite']))
+        && (!('waveReached' in data) || (data.waveReached is int && data.waveReached >= 1 && data.waveReached <= 9999))
+        && (!('bestHitChain' in data) || (data.bestHitChain is int && data.bestHitChain >= 0 && data.bestHitChain <= 99999))
+        && isValidBadgesList(data.badges)
+        && data.createdAt is timestamp;
+    }
+
+    match /users/{userId} {
+      allow get: if isValidId(userId) && isOwner(userId);
+      allow list: if false;
+      allow create: if isVerified()
+        && isValidId(userId)
+        && isOwner(userId)
+        && isValidUserProfile(incoming(), userId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerified()
+        && isValidId(userId)
+        && isOwner(userId)
+        && isValidUserProfile(incoming(), userId)
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'displayName',
+          'bestScore',
+          'highestLine',
+          'totalEnemiesDefeated',
+          'gamesPlayed',
+          'bestRushScore',
+          'bestRushWave',
+          'bestHitChain',
+          'badges',
+          'updatedAt'
+        ])
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().bestScore >= existing().bestScore
+        && incoming().highestLine >= existing().highestLine
+        && incoming().totalEnemiesDefeated >= existing().totalEnemiesDefeated
+        && incoming().gamesPlayed >= existing().gamesPlayed
+        && (!('bestRushScore' in existing()) || incoming().bestRushScore >= existing().bestRushScore)
+        && (!('bestRushWave' in existing()) || incoming().bestRushWave >= existing().bestRushWave)
+        && (!('bestHitChain' in existing()) || !('bestHitChain' in incoming()) || incoming().bestHitChain >= existing().bestHitChain);
+      allow delete: if false;
+
+      match /runs/{runId} {
+        allow get: if isValidId(userId) && isValidId(runId) && isOwner(userId);
+        allow list: if isValidId(userId) && isOwner(userId) && resource.data.uid == request.auth.uid;
+        allow create: if isVerified()
+          && isValidId(userId)
+          && isValidId(runId)
+          && isOwner(userId)
+          && isValidGameRun(incoming(), userId)
+          && incoming().createdAt == request.time
+          && exists(/databases/$(database)/documents/users/$(userId));
+        allow update, delete: if false;
+      }
+    }
+
+    match /leaderboard/{userId} {
+      allow get: if isSignedIn() && isValidId(userId);
+      allow list: if isSignedIn() && resource.data.bestScore is int && resource.data.bestScore >= 0;
+      allow create: if isVerified()
+        && isValidId(userId)
+        && isOwner(userId)
+        && isValidLeaderboardEntry(incoming(), userId)
+        && incoming().updatedAt == request.time;
+      allow update: if isVerified()
+        && isValidId(userId)
+        && isOwner(userId)
+        && isValidLeaderboardEntry(incoming(), userId)
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'playerName',
+          'bestScore',
+          'highestLine',
+          'enemiesDefeated',
+          'bestHitChain',
+          'badges',
+          'updatedAt'
+        ])
+        && incoming().uid == existing().uid
+        && incoming().updatedAt == request.time
+        && incoming().bestScore >= existing().bestScore
+        && (!('bestHitChain' in existing()) || !('bestHitChain' in incoming()) || incoming().bestHitChain >= existing().bestHitChain);
+      allow delete: if false;
+    }
+
+    match /rush_leaderboard/{userId} {
+      allow get: if isSignedIn() && isValidId(userId);
+      allow list: if isSignedIn() && resource.data.bestScore is int && resource.data.bestScore >= 0;
+      allow create: if isVerified()
+        && isValidId(userId)
+        && isOwner(userId)
+        && isValidRushLeaderboardEntry(incoming(), userId)
+        && incoming().updatedAt == request.time;
+      allow update: if isVerified()
+        && isValidId(userId)
+        && isOwner(userId)
+        && isValidRushLeaderboardEntry(incoming(), userId)
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'playerName',
+          'bestScore',
+          'bestWave',
+          'enemiesDefeated',
+          'bestHitChain',
+          'badges',
+          'updatedAt'
+        ])
+        && incoming().uid == existing().uid
+        && incoming().updatedAt == request.time
+        && incoming().bestScore >= existing().bestScore
+        && (!('bestHitChain' in existing()) || !('bestHitChain' in incoming()) || incoming().bestHitChain >= existing().bestHitChain);
+      allow delete: if false;
+    }
+  }
+}
