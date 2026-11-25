@@ -9,6 +9,7 @@ import {
   recordRushWaveMilestone,
   unlockPersistentAchievement,
 } from './badges';
+import { DailyMissionEventType, recordDailyMissionEvent } from './dailyMissions';
 import {
   AISLE_MAX_Y,
   AISLE_MIN_Y,
@@ -21,7 +22,7 @@ import {
 } from './levels';
 import { DitherPostProcessor } from './postProcessShader';
 import { findBusSeatAtX, SeatSlotInfo } from './seats';
-import { getActiveShopLoadout, loadCampaignBestScore, loadInfiniteRecord } from './shop';
+import { getActiveShopLoadout } from './shop';
 import {
   drawBossFinisherEffect,
   drawFullScreenKoAnimation,
@@ -30,14 +31,14 @@ import {
   drawVectorBusInterior,
   drawVectorDropItem,
   drawVectorEnemy,
-  drawVectorForegroundPoles,
+  drawVectorForegroundLayer,
   drawVectorPlayer,
 } from './vectorArt';
 import {
   AchievementBadgeId,
   AchievementUnlockNotice,
+  BossFinisherKind,
   BossHudInfo,
-  CombatLogEntry,
   DropItem,
   EnemyEntity,
   EnemyType,
@@ -49,10 +50,9 @@ import {
   ItemType,
   LineDefinition,
   Particle,
+  PlayerAnimState,
   PlayerEntity,
   Projectile,
-  ScreenNotification,
-  ScreenNotificationTone,
   WaveZone,
 } from './types';
 
@@ -116,10 +116,41 @@ export class BusBeatEmUpEngine {
   private comboTintTimer = 0;
   private comboFlickerTimer = 0;
   private comboFlickerIntensity = 0;
+  private comboEdgeFlashTimer = 0;
+  private comboEdgeFlashMax = 0.38;
+  private comboEdgeFlashStrength = 0;
+  private comboEdgeParticles: Array<{
+    x: number;
+    y: number;
+    prevX: number;
+    prevY: number;
+    vx: number;
+    vy: number;
+    life: number;
+    maxLife: number;
+    size: number;
+    color: string;
+  }> = [];
+  private specialReadyParticles: Array<{
+    ox: number;
+    oz: number;
+    vx: number;
+    vz: number;
+    life: number;
+    maxLife: number;
+    kind: 'spark' | 'arc';
+    seed: number;
+    front: boolean;
+    color: string;
+  }> = [];
+  private specialReadySpawnAcc = 0;
   private hitstopTimer = 0;
   private bossBulletTimeTimer = 0;
   private bossKoFlashTimer = 0;
   private bossKoTrailTimer = 0;
+  private specialLightTimer = 0;
+  private specialLightMax = 0.48;
+  private specialLightColor = '#facc15';
   private runElapsedSeconds = 0;
   private caneHintTimer = 0;
   private shieldBreakHintTimer = 0;
@@ -148,17 +179,31 @@ export class BusBeatEmUpEngine {
   private hudSyncTimer = 0;
   private bufferedAction: ActionKey | null = null;
   private bufferTimer = 0;
-  private screenNotifications: (ScreenNotification & { life: number })[] = [];
-  private nextNotificationId = 1;
-  private combatLog: (CombatLogEntry & { ttl: number })[] = [];
-  private nextCombatLogId = 1;
-  private wasNearEmptySeatLog = false;
-  private wasNearValidatorLog = false;
-  private wasFiscalLogTriggered = false;
-  private highScoreTarget = 0;
-  private newHighScoreAnnounced = false;
-  private perfectTimingCooldown = 0;
   private hitChainTimer = 0;
+  private staticRenderedState: GameState | null = null;
+  private pendingBossSpawns: Array<{
+    waveId: number;
+    type: EnemyType;
+    x: number;
+    y: number;
+    delayRemaining: number;
+    guaranteedDrop?: ItemType;
+  }> = [];
+  private bossFinisherState: {
+    victimId: number;
+    kind: BossFinisherKind;
+    elapsed: number;
+    duration: number;
+    anchorX: number;
+    anchorY: number;
+    facing: 1 | -1;
+    didGrabFx: boolean;
+    swingWhooshCount: number;
+    poundHitCount: number;
+    kneeHitDone: boolean;
+    slamImpactDone: boolean;
+  } | null = null;
+  private lastBossFinisherKind: BossFinisherKind | null = null;
 
   private busEventCooldown = 14;
   private busEventState:
@@ -189,6 +234,7 @@ export class BusBeatEmUpEngine {
   private railSpinKoCount = 0;
   private damageTakenThisLine = false;
   private skippedValidationAnyLine = false;
+  private dailyRunCounted = false;
 
   private heldKeys = new Set<string>();
   private virtualMove = { x: 0, y: 0 };
@@ -290,13 +336,17 @@ export class BusBeatEmUpEngine {
   public startLoop() {
     this.lastTime = performance.now();
     const tick = (now: number) => {
+      this.rafId = requestAnimationFrame(tick);
+      if (typeof document !== 'undefined' && document.hidden) {
+        this.lastTime = now;
+        return;
+      }
       const rawDt = (now - this.lastTime) / 1000;
       this.lastTime = now;
       const dt = Math.min(rawDt, 0.05);
 
       this.update(dt);
       this.render();
-      this.rafId = requestAnimationFrame(tick);
     };
     this.rafId = requestAnimationFrame(tick);
   }
@@ -349,6 +399,7 @@ export class BusBeatEmUpEngine {
   }
 
   private loadLine(idx: number, fullReset: boolean) {
+    this.staticRenderedState = null;
     this.currentLineIdx = idx;
     this.line = BUS_LINES[idx];
     this.enemies = [];
@@ -361,18 +412,27 @@ export class BusBeatEmUpEngine {
     this.bossFinisherEffects = [];
     this.impactFlashes = [];
     this.bossKoOverlay = null;
+    this.pendingBossSpawns = [];
+    this.bossFinisherState = null;
     this.camX = 0;
     this.comboTintTimer = 0;
     this.comboFlickerTimer = 0;
     this.comboFlickerIntensity = 0;
+    this.comboEdgeFlashTimer = 0;
+    this.comboEdgeFlashStrength = 0;
+    this.comboEdgeParticles = [];
+    this.specialReadyParticles = [];
+    this.specialReadySpawnAcc = 0;
     this.bossBulletTimeTimer = 0;
     this.bossKoFlashTimer = 0;
     this.bossKoTrailTimer = 0;
+    this.specialLightTimer = 0;
     if (fullReset) {
       this.runElapsedSeconds = 0;
       this.caneHintTimer = 0;
       this.shieldBreakHintTimer = 0;
       this.player.headphoneWhipUsed = false;
+      this.lastBossFinisherKind = null;
     }
     this.player.hitsLanded = 0;
     this.hitChainTimer = 0;
@@ -394,9 +454,6 @@ export class BusBeatEmUpEngine {
     this.usedSeatSlots.clear();
     this.seatRestHoldTimer = 0;
     this.damageTakenThisLine = false;
-    this.wasNearEmptySeatLog = false;
-    this.wasNearValidatorLog = false;
-    this.wasFiscalLogTriggered = false;
 
     this.waves =
       this.gameMode === 'infinite'
@@ -414,8 +471,7 @@ export class BusBeatEmUpEngine {
     this.player.vy = 0;
     this.player.vz = 0;
     this.player.facing = 1;
-    this.player.anim = 'idle';
-    this.player.animTimer = 0;
+    this.setPlayerAnim('idle', 0);
     this.player.stickySlowTimer = 0;
     this.player.bagSkillCooldown = 0;
 
@@ -450,8 +506,6 @@ export class BusBeatEmUpEngine {
       fiscal.facing = 1;
       fiscal.speechText = 'CADÊ O BILHETE?!';
       fiscal.speechTimer = 2.6;
-      this.wasFiscalLogTriggered = true;
-      this.pushCombatLog('Fiscal se aproximando!', 'rose', 5.2);
     }
 
     this.pushHudSnapshot();
@@ -462,13 +516,8 @@ export class BusBeatEmUpEngine {
     this.infiniteWave = 1;
     this.infiniteTimeLeft = 75;
     this.infiniteThemeLineIdx = 0;
-    this.screenNotifications = [];
-    this.combatLog = [];
-    this.perfectTimingCooldown = 0;
     this.hitChainTimer = 0;
-    this.newHighScoreAnnounced = false;
-    this.highScoreTarget =
-      mode === 'infinite' ? loadInfiniteRecord().bestScore : loadCampaignBestScore();
+    this.dailyRunCounted = false;
     this.heldKeys.clear();
     this.resetPlayer();
     this.loadLine(0, true);
@@ -563,13 +612,14 @@ export class BusBeatEmUpEngine {
   }
 
   public triggerAction(action: ActionKey) {
-    if (this.gameState !== 'PLAYING') return;
+    if (this.gameState !== 'PLAYING' || this.bossFinisherState) return;
 
     const p = this.player;
     const isAttacking =
       p.anim === 'punch1' ||
       p.anim === 'punch2' ||
       p.anim === 'punch3' ||
+      p.anim === 'heavyPunch' ||
       p.anim === 'cane' ||
       p.anim === 'kick' ||
       p.anim === 'kickFinisher' ||
@@ -587,8 +637,7 @@ export class BusBeatEmUpEngine {
     }
     if (p.anim === 'victory') {
       if (p.animTimer > 0.6) return;
-      p.anim = 'idle';
-      p.animTimer = 0;
+      this.setPlayerAnim('idle', 0);
     }
 
     if (action === 'bagGuard') {
@@ -597,17 +646,9 @@ export class BusBeatEmUpEngine {
         return;
       }
       if (p.bagSkillCooldown > 0) {
-        this.addFloatingText(
-          `MOCHILA ${p.bagSkillCooldown.toFixed(1)}s`,
-          p.x,
-          p.y,
-          p.z + 36,
-          '#94a3b8'
-        );
         return;
       }
-      p.anim = 'bagGuard';
-      p.animTimer = 0.52;
+      this.setPlayerAnim('bagGuard', 0.52);
       p.bagSkillCooldown = 2.0;
       p.attackHasHit = false;
       this.bufferedAction = null;
@@ -624,9 +665,6 @@ export class BusBeatEmUpEngine {
         this.performSpray();
         return;
       }
-      if (p.deodorantCount === 0 && !this.isNearValidator() && !this.isNearStopButton()) {
-        this.addFloatingText('SEM DESODORANTE!', p.x, p.y, p.z + 36, '#94a3b8');
-      }
       return;
     }
 
@@ -634,14 +672,12 @@ export class BusBeatEmUpEngine {
       const standingOnSeat = Boolean(this.getEmptySeatUnderPlayer(156) && Math.abs(p.z - 24) <= 2);
       if ((p.z === 0 || standingOnSeat) && !isAttacking) {
         p.vz = 265;
-        p.anim = 'jump';
-        p.animTimer = 0;
+        this.setPlayerAnim('jump', 0);
         this.seatRestHoldTimer = 0;
         audio.playJump();
       } else if (p.z > 10 && p.anim !== 'railGrab' && p.anim !== 'railSpin' && !isAttacking) {
         // Grab onto the yellow strap hanging from the horizontal overhead bar!
-        p.anim = 'railGrab';
-        p.animTimer = 0.7;
+        this.setPlayerAnim('railGrab', 0.7);
         p.z = Math.max(p.z, Math.min(62, Math.max(36, p.y - 138)));
         p.vz = 0;
         p.invulnTimer = Math.max(p.invulnTimer, 0.35);
@@ -669,16 +705,18 @@ export class BusBeatEmUpEngine {
     if (action === 'special') {
       if (p.specialEnergy >= 100 && !isAttacking) {
         p.specialEnergy = 0;
-        p.anim = 'soundSpecial';
-        p.animTimer = 0.42;
+        this.setPlayerAnim('soundSpecial', 0.42);
         p.attackHasHit = false;
         p.invulnTimer = 0.48;
+        this.hitstopTimer = 0.052;
+        this.specialLightMax = 0.52;
+        this.specialLightTimer = 0.52;
+        this.specialLightColor = '#38bdf8';
         audio.playSoundWave();
         vibrateSpecial('sound');
-        this.triggerShake(0.28, 5);
-        this.spawnParticles(p.x, p.y, p.z + 18, '#38bdf8', 18);
-        this.spawnParticles(p.x, p.y, p.z + 18, '#facc15', 12);
-        this.addFloatingText('EXPLOSÃO SONORA!', p.x, p.y, p.z + 48, '#38bdf8');
+        this.triggerShake(0.36, 7);
+        this.spawnParticles(p.x, p.y, p.z + 18, '#38bdf8', 24);
+        this.spawnParticles(p.x, p.y, p.z + 18, '#facc15', 16);
         const ringRadius = Math.round(36 * (1 + this.shopLoadout.specialReachBonus));
         for (const dir of [-1, 1] as const) {
           this.projectiles.push({
@@ -697,13 +735,16 @@ export class BusBeatEmUpEngine {
           });
         }
         this.pushHudSnapshot();
+        this.trackDailyMission('use_special', 1);
       } else if (p.hp > 10 && !isAttacking) {
         p.hp = Math.max(1, p.hp - 8);
-        this.resetComboStreak(true);
-        p.anim = 'special';
-        p.animTimer = 0.46;
+        this.resetComboStreak();
+        this.setPlayerAnim('special', 0.46);
         p.attackHasHit = false;
         p.invulnTimer = 0.48;
+        this.specialLightMax = 0.48;
+        this.specialLightTimer = 0.48;
+        this.specialLightColor = '#facc15';
         if (p.z === 0) {
           p.z = 6;
           p.vz = 155;
@@ -712,8 +753,11 @@ export class BusBeatEmUpEngine {
         }
         audio.playSpecial();
         vibrateSpecial('health');
-        this.spawnParticles(p.x, p.y, p.z + 16, '#facc15', 14);
+        this.triggerShake(0.28, 5.5);
+        this.spawnParticles(p.x, p.y, p.z + 16, '#facc15', 18);
+        this.spawnParticles(p.x, p.y, p.z + 16, '#22c55e', 10);
         this.pushHudSnapshot();
+        this.trackDailyMission('use_special', 1);
       }
       return;
     }
@@ -724,20 +768,19 @@ export class BusBeatEmUpEngine {
     }
 
     if (p.anim === 'railGrab' && (action === 'kick' || action === 'punch')) {
-      p.anim = 'railSpin';
-      p.animTimer = 0.38;
+      this.setPlayerAnim('railSpin', 0.38);
       p.attackHasHit = false;
       p.invulnTimer = Math.max(p.invulnTimer, 0.35);
       audio.playKick();
       vibrateSpecial('bagSpin');
       this.spawnParticles(p.x, p.y, p.z + 12, '#38bdf8', 12);
+      this.trackDailyMission('rail_spins', 1);
       return;
     }
 
     if (p.z > 0 && (action === 'kick' || action === 'punch')) {
       if (p.anim !== 'jumpKick' && p.anim !== 'railSpin') {
-        p.anim = 'jumpKick';
-        p.animTimer = 0.36;
+        this.setPlayerAnim('jumpKick', 0.36);
         p.attackHasHit = false;
         audio.playKick();
         if (this.hasNearbyActiveBoss(195)) {
@@ -759,8 +802,7 @@ export class BusBeatEmUpEngine {
 
   private triggerBagCounterSpin(fromParry: boolean) {
     const p = this.player;
-    p.anim = 'bagSpin';
-    p.animTimer = 0.36;
+    this.setPlayerAnim('bagSpin', 0.36);
     p.attackHasHit = false;
     p.invulnTimer = Math.max(p.invulnTimer, 0.44);
     if (fromParry) {
@@ -768,15 +810,13 @@ export class BusBeatEmUpEngine {
       p.specialEnergy = Math.min(100, p.specialEnergy + 16);
       p.score += 100;
       this.bagParryCount++;
+      this.trackDailyMission('bag_parries', 1);
       audio.playBlock();
       this.spawnHitSparks(p.x + p.facing * 10, p.y, p.z + 20, p.facing, {
         target: 'barrier',
         strong: true,
         blocked: true,
       });
-      this.addFloatingText('CONTRA-ATAQUE! +100', p.x, p.y, p.z + 46, '#facc15');
-      this.pushScreenNotification('Perfect Timing!', 'cyan', p.x, p.y, p.z + 58);
-      this.pushCombatLog('Contra-ataque perfeito!', 'cyan', 4.0);
       if (this.bagParryCount >= 3) {
         this.unlockAchievement('ninja_mochila');
       }
@@ -789,8 +829,7 @@ export class BusBeatEmUpEngine {
 
   private triggerRailSlam() {
     const p = this.player;
-    p.anim = 'railSlam';
-    p.animTimer = 0.55;
+    this.setPlayerAnim('railSlam', 0.55);
     p.z = Math.max(p.z, 46);
     p.vz = -430;
     p.attackHasHit = false;
@@ -799,6 +838,7 @@ export class BusBeatEmUpEngine {
     audio.playSpecial();
     vibrateSpecial('slam');
     this.spawnParticles(p.x, p.y, p.z + 18, p.rageTimer > 0 ? '#ef4444' : '#facc15', 10);
+    this.trackDailyMission('rail_spins', 1);
   }
 
   private resolveRailSlamImpact() {
@@ -814,6 +854,7 @@ export class BusBeatEmUpEngine {
 
     audio.playBusBump();
     audio.playHeavyHit();
+    audio.playMetallicImpact(true);
     vibrateSpecial('slam');
     this.hitstopTimer = 0.065;
     this.triggerShake(0.26, 6);
@@ -842,7 +883,6 @@ export class BusBeatEmUpEngine {
 
       if (e.type === 'industria' && e.stinkActive) {
         e.stinkActive = false;
-        this.addFloatingText('ODOR DISSIPADO!', e.x, e.y, e.z + 44, '#67e8f9');
       }
 
       e.hp -= damage;
@@ -883,10 +923,6 @@ export class BusBeatEmUpEngine {
       p.specialEnergy = Math.min(100, p.specialEnergy + 14);
       this.comboFlickerIntensity = 1;
       this.comboFlickerTimer = Math.max(this.comboFlickerTimer, 1.0);
-      if (hitCount >= 2 && this.perfectTimingCooldown <= 0) {
-        this.perfectTimingCooldown = 2.2;
-        this.pushScreenNotification('Perfect Timing!', 'cyan', p.x, p.y, 56);
-      }
     }
     this.pushHudSnapshot();
   }
@@ -896,16 +932,13 @@ export class BusBeatEmUpEngine {
     if (action === 'punch') {
       if (p.comboMultiplier >= 7 && !p.headphoneWhipUsed) {
         p.headphoneWhipUsed = true;
-        p.anim = 'headphoneWhip';
-        p.animTimer = 0.38;
+        this.setPlayerAnim('headphoneWhip', 0.38);
         p.attackHasHit = false;
         audio.playRockWhip();
         this.spawnParticles(p.x + p.facing * 24, p.y, p.z + 24, '#fde047', 4);
-        this.addFloatingText('CHICOTE DE FONE!', p.x, p.y, p.z + 44, '#fde047');
         this.pushHudSnapshot();
       } else if (p.caneCharges > 0) {
-        p.anim = 'cane';
-        p.animTimer = 0.26;
+        this.setPlayerAnim('cane', 0.28);
         p.attackHasHit = false;
         audio.playCaneHit();
       } else {
@@ -914,22 +947,25 @@ export class BusBeatEmUpEngine {
         } else {
           p.comboStep = 0;
         }
-        p.anim = p.comboStep === 0 ? 'punch1' : p.comboStep === 1 ? 'punch2' : 'punch3';
-        p.animTimer = p.comboStep === 2 ? 0.28 : 0.2;
-        p.comboResetTimer = p.comboStep === 2 ? 0 : 0.48;
-        p.attackHasHit = false;
-        audio.playPunch();
+        if (p.comboStep === 2) {
+          this.setPlayerAnim('heavyPunch', 0.44);
+          p.comboResetTimer = 0;
+          p.attackHasHit = false;
+        } else {
+          this.setPlayerAnim(p.comboStep === 0 ? 'punch1' : 'punch2', p.comboStep === 0 ? 0.22 : 0.24);
+          p.comboResetTimer = 0.5;
+          p.attackHasHit = false;
+          audio.playPunch();
+        }
       }
     } else if (action === 'kick') {
       if (p.comboResetTimer > 0) {
-        p.anim = 'kickFinisher';
-        p.animTimer = 0.34;
+        this.setPlayerAnim('kickFinisher', 0.38);
         p.comboResetTimer = 0;
         p.attackHasHit = false;
         audio.playKick();
       } else {
-        p.anim = 'kick';
-        p.animTimer = 0.26;
+        this.setPlayerAnim('kick', 0.28);
         p.attackHasHit = false;
         audio.playKick();
       }
@@ -958,23 +994,14 @@ export class BusBeatEmUpEngine {
       p.specialEnergy = Math.min(100, p.specialEnergy + 18);
       audio.playValidate();
       this.spawnParticles(this.line.validatorX, 155, 25, '#10b981', 16);
-      this.addFloatingText('BILHETE VALIDADO! +300', p.x, p.y, p.z + 42, '#34d399');
-      this.pushCombatLog('Bilhete Validado (+300)', 'emerald', 4.5);
       if (!this.damageTakenThisLine) {
         this.unlockAchievement('validar_sem_dano');
       }
+      this.trackDailyMission('validate_tickets', 1);
       this.pushHudSnapshot();
       return true;
     } else {
       audio.playBlock();
-      this.addFloatingText(
-        `FALTA CRÉDITO (${p.credits}/${cost})`,
-        p.x,
-        p.y,
-        p.z + 42,
-        '#fbbf24'
-      );
-      this.pushCombatLog(`Falta crédito (${p.credits}/${cost})`, 'gold', 3.8);
       return true;
     }
   }
@@ -991,7 +1018,6 @@ export class BusBeatEmUpEngine {
     audio.playBusBrake();
     this.triggerShake(0.38, 6);
     this.spawnParticles(this.line.stopCordX, 150, 26, '#ef4444', 14);
-    this.addFloatingText('SINAL STOP!', p.x, p.y, p.z + 44, '#fde047');
     let hit = 0;
     for (const e of this.enemies) {
       if (e.hp <= 0) continue;
@@ -1018,9 +1044,7 @@ export class BusBeatEmUpEngine {
     if (hit > 0) {
       this.registerHitChain(hit);
       p.specialEnergy = Math.min(100, p.specialEnergy + 12);
-      this.pushCombatLog(`Sinal STOP! (${hit} atingidos)`, 'gold', 4.2);
-    } else {
-      this.pushCombatLog('Sinal STOP acionado', 'gold', 3.8);
+      audio.playMetallicImpact(true);
     }
     this.pushHudSnapshot();
     return true;
@@ -1029,8 +1053,7 @@ export class BusBeatEmUpEngine {
   private performSpray() {
     const p = this.player;
     p.deodorantCount = Math.max(0, p.deodorantCount - 1);
-    p.anim = 'spray';
-    p.animTimer = 0.28;
+    this.setPlayerAnim('spray', 0.28);
     p.attackHasHit = false;
     audio.playSpray();
 
@@ -1063,7 +1086,6 @@ export class BusBeatEmUpEngine {
         p.score += 150;
         this.registerHitChain(1);
         this.spawnParticles(e.x, e.y, e.z + 20, '#38bdf8', 18);
-        this.addFloatingText('ODOR NEUTRALIZADO!', e.x, e.y, e.z + 42, '#67e8f9');
       }
     }
     this.pushHudSnapshot();
@@ -1076,43 +1098,207 @@ export class BusBeatEmUpEngine {
       this.player.bestHitChain = this.player.hitsLanded;
     }
     this.hitChainTimer = 3.2;
+    this.trackDailyMission('reach_combo', this.player.comboStreak);
   }
 
-  private pushScreenNotification(
-    text: string,
-    tone: ScreenNotificationTone,
-    worldX: number,
-    worldY: number,
-    worldZ = 48
-  ) {
-    const xPct = Math.max(14, Math.min(86, ((worldX - this.camX) / INTERNAL_WIDTH) * 100));
-    const yPct = Math.max(20, Math.min(76, ((worldY - worldZ) / INTERNAL_HEIGHT) * 100));
-    this.screenNotifications.push({
-      id: this.nextNotificationId++,
-      text,
-      tone,
-      xPct,
-      yPct,
-      life: 1.45,
-    });
-    if (this.screenNotifications.length > 4) {
-      this.screenNotifications.shift();
+  private isReducedMotionPreferred(): boolean {
+    return (
+      typeof window !== 'undefined' &&
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    );
+  }
+
+  private triggerComboImpact(multiplier: number) {
+    const overTen = Math.max(1, multiplier - 10);
+    this.comboEdgeFlashMax = 0.38;
+    this.comboEdgeFlashTimer = this.comboEdgeFlashMax;
+    this.comboEdgeFlashStrength = Math.min(1.4, 0.85 + overTen * 0.09);
+
+    if (this.isReducedMotionPreferred()) {
+      return;
     }
-    this.pushHudSnapshot();
+
+    const palette = ['#facc15', '#38bdf8', '#fb7185', '#f97316', '#fef08a'];
+    const burstCount = Math.min(36, 22 + overTen * 2);
+
+    for (let i = 0; i < burstCount; i++) {
+      const edge = i % 4;
+      const color = palette[(i + multiplier) % palette.length];
+      const maxLife = 0.34 + Math.random() * 0.28;
+      const size = 1.4 + Math.random() * 1.7;
+      let x = 0;
+      let y = 0;
+      let vx = 0;
+      let vy = 0;
+
+      if (edge === 0) {
+        // Top border -> burst inward & diagonally
+        x = 8 + Math.random() * (INTERNAL_WIDTH - 16);
+        y = 1 + Math.random() * 3;
+        vx = (Math.random() - 0.5) * 95;
+        vy = 45 + Math.random() * 95;
+      } else if (edge === 1) {
+        // Bottom border -> burst inward & diagonally
+        x = 8 + Math.random() * (INTERNAL_WIDTH - 16);
+        y = INTERNAL_HEIGHT - 1 - Math.random() * 3;
+        vx = (Math.random() - 0.5) * 95;
+        vy = -(45 + Math.random() * 95);
+      } else if (edge === 2) {
+        // Left border -> burst inward
+        x = 1 + Math.random() * 3;
+        y = 8 + Math.random() * (INTERNAL_HEIGHT - 16);
+        vx = 55 + Math.random() * 115;
+        vy = (Math.random() - 0.5) * 75;
+      } else {
+        // Right border -> burst inward
+        x = INTERNAL_WIDTH - 1 - Math.random() * 3;
+        y = 8 + Math.random() * (INTERNAL_HEIGHT - 16);
+        vx = -(55 + Math.random() * 115);
+        vy = (Math.random() - 0.5) * 75;
+      }
+
+      this.comboEdgeParticles.push({
+        x,
+        y,
+        prevX: x,
+        prevY: y,
+        vx,
+        vy,
+        life: maxLife,
+        maxLife,
+        size,
+        color,
+      });
+    }
+
+    if (this.comboEdgeParticles.length > 96) {
+      this.comboEdgeParticles.splice(0, this.comboEdgeParticles.length - 96);
+    }
   }
 
-  private checkNewHighScore() {
-    if (this.newHighScoreAnnounced) return;
-    const threshold = this.highScoreTarget > 0 ? this.highScoreTarget : 1000;
-    if (this.player.score > threshold) {
-      this.newHighScoreAnnounced = true;
-      this.pushScreenNotification(
-        'New High Score!',
-        'gold',
-        this.player.x,
-        this.player.y,
-        this.player.z + 60
-      );
+  private updatePlayerSpecialElectricParticles(dt: number) {
+    const p = this.player;
+    const isSpecialReady =
+      this.gameState === 'PLAYING' && p.specialEnergy >= 100 && p.anim !== 'victory';
+    const reduced = this.isReducedMotionPreferred();
+
+    if (isSpecialReady) {
+      const spawnRate = reduced ? 4.5 : 16;
+      const maxPool = reduced ? 4 : 9;
+      this.specialReadySpawnAcc += dt * spawnRate;
+      const palette = ['#38bdf8', '#67e8f9', '#7dd3fc', '#fef08a'];
+
+      while (this.specialReadySpawnAcc >= 1) {
+        this.specialReadySpawnAcc -= 1;
+        if (this.specialReadyParticles.length >= maxPool) {
+          this.specialReadyParticles.shift();
+        }
+        const side = Math.random() < 0.5 ? -1 : 1;
+        const ox = side * (8 + Math.random() * 10);
+        const oz = 5 + Math.random() * 29;
+        const kind: 'spark' | 'arc' =
+          !reduced && Math.random() < 0.44 ? 'arc' : 'spark';
+        const maxLife = reduced
+          ? 0.45 + Math.random() * 0.25
+          : 0.2 + Math.random() * 0.16;
+
+        this.specialReadyParticles.push({
+          ox,
+          oz,
+          vx: side * (4 + Math.random() * 10),
+          vz: 14 + Math.random() * 22,
+          life: maxLife,
+          maxLife,
+          kind,
+          seed: Math.random() * Math.PI * 2,
+          front: Math.random() < 0.55,
+          color: palette[Math.floor(Math.random() * palette.length)],
+        });
+      }
+    } else {
+      this.specialReadySpawnAcc = 0;
+    }
+
+    for (let i = this.specialReadyParticles.length - 1; i >= 0; i--) {
+      const sp = this.specialReadyParticles[i];
+      sp.life -= dt;
+      if (sp.life <= 0) {
+        this.specialReadyParticles.splice(i, 1);
+        continue;
+      }
+      if (!reduced) {
+        sp.ox += sp.vx * dt;
+        sp.oz += sp.vz * dt;
+        sp.vx *= Math.exp(-3.4 * dt);
+      }
+    }
+  }
+
+  private drawPlayerSpecialElectricParticles(ctx: CanvasRenderingContext2D, front: boolean) {
+    if (this.specialReadyParticles.length === 0) return;
+
+    const pxBase = this.player.x - this.camX;
+    const pyBase = this.player.y - this.player.z;
+
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    for (const sp of this.specialReadyParticles) {
+      if (sp.front !== front) continue;
+      const lifeRatio = Math.max(0, Math.min(1, sp.life / sp.maxLife));
+      const alpha = Math.sin(lifeRatio * Math.PI) * 0.88;
+      if (alpha <= 0.03) continue;
+
+      const sx = pxBase + sp.ox;
+      const sy = pyBase - sp.oz;
+
+      if (sp.kind === 'arc') {
+        const ang = sp.seed + (1 - lifeRatio) * 1.4;
+        const len = 3.2 + Math.sin(sp.seed * 3) * 1.1;
+        const midJitter = ((Math.floor(this.simTime * 28 + sp.seed * 5) % 2) * 2 - 1) * 1.8;
+        const x1 = sx + Math.cos(ang) * len;
+        const y1 = sy + Math.sin(ang) * len + midJitter;
+        const x2 = x1 + Math.cos(ang + 0.85) * (len * 0.9);
+        const y2 = y1 + Math.sin(ang + 0.85) * (len * 0.9) - midJitter * 0.6;
+
+        ctx.globalAlpha = alpha * 0.9;
+        ctx.strokeStyle = sp.color;
+        ctx.lineWidth = 1.35;
+        ctx.beginPath();
+        ctx.moveTo(sx, sy);
+        ctx.lineTo(x1, y1);
+        ctx.lineTo(x2, y2);
+        ctx.stroke();
+
+        ctx.globalAlpha = alpha * 0.75;
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 0.65;
+        ctx.stroke();
+      } else {
+        ctx.globalAlpha = alpha * 0.28;
+        ctx.fillStyle = '#38bdf8';
+        ctx.beginPath();
+        ctx.arc(sx, sy, 2.3, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.globalAlpha = alpha * 0.95;
+        ctx.fillStyle = sp.color;
+        ctx.fillRect(sx - 0.8, sy - 0.8, 1.6, 1.6);
+
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(sx - 0.4, sy - 0.4, 0.8, 0.8);
+      }
+    }
+
+    ctx.restore();
+  }
+
+  private trackDailyMission(type: DailyMissionEventType, value = 1) {
+    const res = recordDailyMissionEvent(type, value);
+    if (res.newlyCompleted.length > 0) {
+      audio.playValidate();
     }
   }
 
@@ -1183,7 +1369,7 @@ export class BusBeatEmUpEngine {
       vendedor: { name: 'Vendedor Ambulante', hp: Math.max(22, Math.round(48 * hpMult)), barrier: false, guardMax: 0, stink: false, boss: false },
       estudante: { name: 'Estudante Mochilão', hp: Math.max(28, Math.round(62 * hpMult)), barrier: true, guardMax: 3, stink: false, boss: false },
       patricinha: { name: 'Patricinha', hp: Math.max(26, Math.round(54 * hpMult)), barrier: false, guardMax: 0, stink: false, boss: false },
-      industria: { name: 'Operário Indústria', hp: Math.max(40, Math.round(80 * hpMult)), barrier: false, guardMax: 0, stink: true, boss: false },
+      industria: { name: 'Operário Indústria', hp: Math.max(40, Math.round(80 * hpMult)), barrier: false, guardMax: 2, stink: true, boss: false },
       fiscal: { name: 'Fiscal', hp: Math.max(50, Math.round(95 * hpMult)), barrier: false, guardMax: 0, stink: false, boss: false },
       tio_audio: { name: 'Tio do Áudio Alto', hp: Math.max(24, Math.round(52 * hpMult)), barrier: false, guardMax: 0, stink: false, boss: false },
       skatista: { name: 'Skatista Apressado', hp: Math.max(26, Math.round(56 * hpMult)), barrier: false, guardMax: 0, stink: false, boss: false },
@@ -1434,6 +1620,32 @@ export class BusBeatEmUpEngine {
     }
   }
 
+  private setPlayerAnim(anim: PlayerAnimState, duration = 0) {
+    this.player.anim = anim;
+    this.player.animTimer = duration;
+    this.player.animDuration = duration > 0 ? duration : undefined;
+  }
+
+  private isBossType(type: EnemyType): boolean {
+    return type.startsWith('boss_');
+  }
+
+  private getBossStrengthScore(type: EnemyType): number {
+    if (type === 'boss_cobrador_blindado') return 320 + 6 * 30;
+    if (type === 'boss_cobrador') return this.currentLineIdx === 0 ? 200 : 250;
+    if (type === 'boss_motorista') return 210;
+    if (type === 'boss_fiscal_chefe') return Math.round(230 * 0.88);
+    return 100;
+  }
+
+  private hasRemainingBosses(exclude?: EnemyEntity): boolean {
+    const aliveBoss = this.enemies.some(
+      (other) => other !== exclude && other.isBoss && other.hp > 0
+    );
+    if (aliveBoss) return true;
+    return this.pendingBossSpawns.some((pb) => this.isBossType(pb.type));
+  }
+
   private addFloatingText(text: string, x: number, y: number, z: number, color: string) {
     this.floatingTexts.push({
       text,
@@ -1446,54 +1658,9 @@ export class BusBeatEmUpEngine {
     });
   }
 
-  private pushCombatLog(
-    text: string,
-    tone: ScreenNotificationTone = 'cyan',
-    ttl = 4.5
-  ) {
-    if (this.gameState !== 'PLAYING' && this.gameState !== 'INTRO_SCENE') return;
-    const last = this.combatLog[this.combatLog.length - 1];
-    if (last && last.text === text) {
-      last.ttl = Math.max(last.ttl, ttl);
-      return;
-    }
-    this.combatLog.push({
-      id: this.nextCombatLogId++,
-      text,
-      tone,
-      ttl,
-    });
-    while (this.combatLog.length > 4) {
-      this.combatLog.shift();
-    }
-    this.pushHudSnapshot();
-  }
-
   private update(dt: number) {
     this.simTime += dt;
     this.updateAchievementToast(dt);
-    let hudDirty = false;
-    if (this.screenNotifications.length > 0) {
-      for (let i = this.screenNotifications.length - 1; i >= 0; i--) {
-        this.screenNotifications[i].life -= dt;
-        if (this.screenNotifications[i].life <= 0) {
-          this.screenNotifications.splice(i, 1);
-          hudDirty = true;
-        }
-      }
-    }
-    if (this.combatLog.length > 0) {
-      for (let i = this.combatLog.length - 1; i >= 0; i--) {
-        this.combatLog[i].ttl -= dt;
-        if (this.combatLog[i].ttl <= 0) {
-          this.combatLog.splice(i, 1);
-          hudDirty = true;
-        }
-      }
-    }
-    if (hudDirty) {
-      this.pushHudSnapshot();
-    }
 
     if (this.gameState === 'INTRO_SCENE' || this.gameState === 'VICTORY_SCENE') {
       return;
@@ -1508,9 +1675,6 @@ export class BusBeatEmUpEngine {
       return;
     }
 
-    if (this.perfectTimingCooldown > 0) {
-      this.perfectTimingCooldown = Math.max(0, this.perfectTimingCooldown - dt);
-    }
     if (this.hitChainTimer > 0) {
       this.hitChainTimer = Math.max(0, this.hitChainTimer - dt);
       if (this.hitChainTimer === 0 && this.player.hitsLanded > 0) {
@@ -1518,7 +1682,6 @@ export class BusBeatEmUpEngine {
         this.pushHudSnapshot();
       }
     }
-    this.checkNewHighScore();
 
     if (this.shakeTimer > 0) {
       this.shakeTimer = Math.max(0, this.shakeTimer - dt);
@@ -1536,6 +1699,29 @@ export class BusBeatEmUpEngine {
     if (this.comboTintTimer > 0) {
       this.comboTintTimer = Math.max(0, this.comboTintTimer - dt);
     }
+    if (this.comboEdgeFlashTimer > 0) {
+      this.comboEdgeFlashTimer = Math.max(0, this.comboEdgeFlashTimer - dt);
+      if (this.comboEdgeFlashTimer === 0) {
+        this.comboEdgeFlashStrength = 0;
+      }
+    }
+    if (this.comboEdgeParticles.length > 0) {
+      const edgeDrag = Math.exp(-5.2 * dt);
+      for (let i = this.comboEdgeParticles.length - 1; i >= 0; i--) {
+        const cp = this.comboEdgeParticles[i];
+        cp.life -= dt;
+        cp.prevX = cp.x;
+        cp.prevY = cp.y;
+        cp.vx *= edgeDrag;
+        cp.vy *= edgeDrag;
+        cp.x += cp.vx * dt;
+        cp.y += cp.vy * dt;
+        if (cp.life <= 0) {
+          this.comboEdgeParticles.splice(i, 1);
+        }
+      }
+    }
+    this.updatePlayerSpecialElectricParticles(dt);
     if (this.comboFlickerTimer > 0) {
       this.comboFlickerTimer = Math.max(0, this.comboFlickerTimer - dt);
       if (this.comboFlickerTimer === 0) {
@@ -1544,6 +1730,9 @@ export class BusBeatEmUpEngine {
     }
     if (this.bossKoFlashTimer > 0) {
       this.bossKoFlashTimer = Math.max(0, this.bossKoFlashTimer - dt);
+    }
+    if (this.specialLightTimer > 0) {
+      this.specialLightTimer = Math.max(0, this.specialLightTimer - dt);
     }
     if (this.expressWindTimer > 0) {
       this.expressWindTimer = Math.max(0, this.expressWindTimer - dt);
@@ -1563,6 +1752,10 @@ export class BusBeatEmUpEngine {
     if (this.gameMode === 'infinite') {
       this.infiniteTimeLeft = Math.max(0, this.infiniteTimeLeft - dt);
       if (this.infiniteTimeLeft <= 0) {
+        if (!this.dailyRunCounted) {
+          this.dailyRunCounted = true;
+          this.trackDailyMission('complete_runs', 1);
+        }
         this.gameState = 'GAME_OVER';
         audio.playGameOver();
         this.pushHudSnapshot();
@@ -1608,8 +1801,13 @@ export class BusBeatEmUpEngine {
       worldDt = dt * slowScale;
     }
 
-    this.updateWaves();
-    this.updateBusEvents(worldDt);
+    if (this.bossFinisherState) {
+      this.updateBossFinisher(worldDt);
+    } else {
+      this.updatePendingBossSpawns(worldDt);
+      this.updateWaves();
+      this.updateBusEvents(worldDt);
+    }
     this.updatePlayer(worldDt);
     this.updateEnemies(worldDt);
     this.updateProjectiles(worldDt);
@@ -1617,26 +1815,6 @@ export class BusBeatEmUpEngine {
     this.updateDrops(worldDt);
     this.updateParticles(worldDt);
     this.updateCamera(worldDt);
-
-    const nearValidatorNow = this.isNearValidator();
-    if (nearValidatorNow && !this.wasNearValidatorLog) {
-      this.pushCombatLog('Validador à frente (pressione E)', 'gold', 4.0);
-    }
-    this.wasNearValidatorLog = nearValidatorNow;
-
-    const nearSeatObj = this.getEmptySeatUnderPlayer(158);
-    const nearSeatNow = Boolean(
-      this.line.lineNumber === 1 && nearSeatObj && !this.usedSeatSlots.has(nearSeatObj.slot)
-    );
-    if (nearSeatNow && !this.wasNearEmptySeatLog) {
-      this.pushCombatLog('Assento Disponível (↑ p/ descansar)', 'emerald', 4.2);
-    }
-    this.wasNearEmptySeatLog = nearSeatNow;
-
-    if (this.fiscalChasing && !this.wasFiscalLogTriggered) {
-      this.wasFiscalLogTriggered = true;
-      this.pushCombatLog('Fiscal se aproximando!', 'rose', 5.2);
-    }
 
     const hasStinkyWorker = this.enemies.some((e) => e.type === 'industria' && e.stinkActive);
     const hasDeodorantOnFloor = this.drops.some((d) => d.type === 'desodorante');
@@ -1646,8 +1824,6 @@ export class BusBeatEmUpEngine {
         this.deodorantBackupTimer = 0;
         const dropX = Math.max(this.camX + 60, Math.min(this.camX + INTERNAL_WIDTH - 60, this.player.x + 80));
         this.spawnDrop('desodorante', dropX, 188);
-        this.addFloatingText('DESODORANTE NA POLTRONA!', dropX, 188, 30, '#38bdf8');
-        this.pushCombatLog('Desodorante caiu na poltrona', 'cyan', 4.0);
       }
     } else {
       this.deodorantBackupTimer = 0;
@@ -1656,6 +1832,33 @@ export class BusBeatEmUpEngine {
     this.hudSyncTimer += dt;
     if (this.hudSyncTimer >= 0.08) {
       this.hudSyncTimer = 0;
+      this.pushHudSnapshot();
+    }
+  }
+
+  private updatePendingBossSpawns(dt: number) {
+    if (this.pendingBossSpawns.length === 0) return;
+    const bounds = this.getActiveWaveBounds();
+    let spawnedAny = false;
+
+    for (let i = this.pendingBossSpawns.length - 1; i >= 0; i--) {
+      const item = this.pendingBossSpawns[i];
+      item.delayRemaining -= dt;
+      if (item.delayRemaining <= 0) {
+        this.pendingBossSpawns.splice(i, 1);
+        const spawnX = Math.min(
+          bounds.maxX - 24,
+          Math.max(bounds.minX + 40, Math.max(this.player.x + 150, item.x))
+        );
+        const boss = this.spawnEnemy(item.type, spawnX, item.y, false, item.guaranteedDrop);
+        audio.playBossAlert();
+        this.showAlert(`${boss.name.toUpperCase()} ENTROU!`, 2.6);
+        this.spawnParticles(boss.x, boss.y, 24, '#ef4444', 14);
+        spawnedAny = true;
+      }
+    }
+
+    if (spawnedAny) {
       this.pushHudSnapshot();
     }
   }
@@ -1684,7 +1887,7 @@ export class BusBeatEmUpEngine {
         : Math.max(minLeft, Math.min(maxRight - 80, p.x - 140 - i * 24));
       const y = 168 + ((i * 23) % 52);
       const drop: ItemType | undefined =
-        i === count - 1 && wave % 2 === 0 ? 'cafezinho' : undefined;
+        i === count - 1 && wave % 4 === 0 ? 'cafezinho' : undefined;
       this.spawnEnemy(eType, offsetX, y, false, drop);
     }
 
@@ -1729,7 +1932,6 @@ export class BusBeatEmUpEngine {
         }
 
         audio.playValidate();
-        this.addFloatingText(`+${timeBonus}s TEMPO!`, this.player.x, this.player.y, this.player.z + 48, '#34d399');
         this.spawnInfiniteWave(this.infiniteWave);
         this.pushHudSnapshot();
       }
@@ -1742,10 +1944,16 @@ export class BusBeatEmUpEngine {
         if (wave.isBossWave && wave.bossBanner) {
           this.showAlert(wave.bossBanner, 3.2);
           audio.playBossAlert();
-          this.pushCombatLog(wave.bossBanner, 'rose', 4.8);
         }
-        // Strictly enforce all enemies spawn ahead of the player (from the front!)
+        const bossSpawns: typeof wave.spawns = [];
+        const regularSpawns: typeof wave.spawns = [];
         for (const s of wave.spawns) {
+          if (this.isBossType(s.type)) bossSpawns.push(s);
+          else regularSpawns.push(s);
+        }
+
+        // Strictly enforce all enemies spawn ahead of the player (from the front!)
+        for (const s of regularSpawns) {
           const spawnX = Math.min(
             wave.lockMaxX - 24,
             Math.max(this.player.x + 150, s.offsetX)
@@ -1763,16 +1971,40 @@ export class BusBeatEmUpEngine {
             clone.isRageClone = true;
           }
         }
+
+        // Multi-boss staggered spawn: weakest first immediately, strongest 13s later
+        bossSpawns.sort(
+          (a, b) => this.getBossStrengthScore(a.type) - this.getBossStrengthScore(b.type)
+        );
+        bossSpawns.forEach((s, idx) => {
+          const spawnX = Math.min(
+            wave.lockMaxX - 24,
+            Math.max(this.player.x + 150, s.offsetX)
+          );
+          if (idx === 0) {
+            this.spawnEnemy(s.type, spawnX, s.y, false, s.guaranteedDrop);
+          } else {
+            this.pendingBossSpawns.push({
+              waveId: wave.id,
+              type: s.type,
+              x: spawnX,
+              y: s.y,
+              delayRemaining: 13.0 * idx,
+              guaranteedDrop: s.guaranteedDrop,
+            });
+          }
+        });
+
         this.pushHudSnapshot();
       }
       if (wave.triggered && !wave.cleared) {
         const remainingWaveEnemies = this.enemies.filter((e) => !e.isChaser);
-        if (remainingWaveEnemies.length === 0) {
+        const pendingInWave = this.pendingBossSpawns.some((pb) => pb.waveId === wave.id);
+        if (remainingWaveEnemies.length === 0 && !pendingInWave) {
           wave.cleared = true;
           if (wave.isBossWave) {
             this.turnstileCleared = true;
             audio.playValidate();
-            this.pushCombatLog('Catraca liberada!', 'emerald', 4.8);
           }
           this.pushHudSnapshot();
         }
@@ -1840,6 +2072,7 @@ export class BusBeatEmUpEngine {
       p.anim === 'punch1' ||
       p.anim === 'punch2' ||
       p.anim === 'punch3' ||
+      p.anim === 'heavyPunch' ||
       p.anim === 'cane' ||
       p.anim === 'kick' ||
       p.anim === 'kickFinisher' ||
@@ -1865,14 +2098,21 @@ export class BusBeatEmUpEngine {
       iy *= norm;
     }
 
+    if (this.bossFinisherState) {
+      p.invulnTimer = Math.max(p.invulnTimer, 0.25);
+      p.vx = 0;
+      p.vy = 0;
+      p.vz = 0;
+      return;
+    }
+
     if (p.anim === 'hurt' || p.anim === 'knockdown') {
       p.animTimer -= dt;
       p.x += p.vx * dt;
       p.vx *= Math.pow(0.05, dt);
       this.seatRestHoldTimer = 0;
       if (p.animTimer <= 0) {
-        p.anim = 'idle';
-        p.animTimer = 0;
+        this.setPlayerAnim('idle', 0);
       }
     } else if (p.anim === 'victory') {
       p.animTimer -= dt;
@@ -1884,8 +2124,7 @@ export class BusBeatEmUpEngine {
         this.spawnParticles(p.x + (Math.random() - 0.5) * 18, p.y, 26, '#fde047', 1);
       }
       if (p.animTimer <= 0 || (p.animTimer <= 0.6 && (Math.abs(ix) > 0.2 || Math.abs(iy) > 0.2))) {
-        p.anim = 'idle';
-        p.animTimer = 0;
+        this.setPlayerAnim('idle', 0);
       }
     } else if (p.anim === 'bagGuard') {
       p.animTimer -= dt;
@@ -1895,8 +2134,7 @@ export class BusBeatEmUpEngine {
       if (ix > 0.1) p.facing = 1;
       else if (ix < -0.1) p.facing = -1;
       if (p.animTimer <= 0) {
-        p.anim = p.z > 0 ? 'jump' : 'idle';
-        p.animTimer = 0;
+        this.setPlayerAnim(p.z > 0 ? 'jump' : 'idle', 0);
       }
     } else if (p.anim === 'railGrab') {
       p.animTimer -= dt;
@@ -1904,8 +2142,7 @@ export class BusBeatEmUpEngine {
       p.vz = 0;
       this.seatRestHoldTimer = 0;
       if (p.animTimer <= 0) {
-        p.anim = 'jump';
-        p.animTimer = 0;
+        this.setPlayerAnim('jump', 0);
         p.vz = -45;
       }
     } else if (isAttacking) {
@@ -1916,6 +2153,13 @@ export class BusBeatEmUpEngine {
         p.animTimer -= dt;
         if (p.anim === 'jumpKick' || p.anim === 'railSpin') {
           p.x += ix * 95 * dt;
+        } else if (p.anim === 'heavyPunch') {
+          if (p.animTimer <= 0.3 && p.animTimer + dt > 0.3) {
+            p.x += p.facing * 5;
+            audio.playPunch();
+          } else if (p.animTimer <= 0.14 && p.animTimer > 0 && Math.random() < dt * 26) {
+            this.spawnParticles(p.x + p.facing * 16, p.y, p.z + 24, '#fde047', 1);
+          }
         } else if (p.anim === 'special') {
           if (p.animTimer > 0.22 && p.z >= 14) {
             // Brief suspended hover during the Special Kick coil pose
@@ -1923,18 +2167,36 @@ export class BusBeatEmUpEngine {
           } else if (p.animTimer <= 0.22 && p.animTimer + dt > 0.22) {
             p.x += p.facing * 6;
             audio.playKick();
+            this.hitstopTimer = Math.max(this.hitstopTimer, 0.045);
           }
         }
-        if (!p.attackHasHit && (p.anim !== 'special' || p.animTimer <= 0.22)) {
+        const canHitNow =
+          (p.anim !== 'punch1' || p.animTimer <= 0.17) &&
+          (p.anim !== 'punch2' || p.animTimer <= 0.19) &&
+          (p.anim !== 'heavyPunch' || p.animTimer <= 0.3) &&
+          (p.anim !== 'kick' || p.animTimer <= 0.21) &&
+          (p.anim !== 'kickFinisher' || p.animTimer <= 0.28) &&
+          (p.anim !== 'jumpKick' || p.animTimer <= 0.28) &&
+          (p.anim !== 'cane' || p.animTimer <= 0.21) &&
+          (p.anim !== 'special' || p.animTimer <= 0.22);
+        if (!p.attackHasHit && canHitNow) {
           this.resolvePlayerAttack();
         }
         if (p.animTimer <= 0) {
-          p.anim = p.z > 0 ? 'jump' : 'idle';
-          p.animTimer = 0;
+          const prevAnim = p.anim;
+          this.setPlayerAnim(p.z > 0 ? 'jump' : 'idle', 0);
           if (this.bufferedAction) {
             const nextAct = this.bufferedAction;
             this.bufferedAction = null;
             this.executeGroundAttack(nextAct);
+          } else if (
+            (prevAnim === 'punch1' || prevAnim === 'punch2') &&
+            (this.heldKeys.has('KeyJ') || this.heldKeys.has('KeyZ')) &&
+            p.z === 0
+          ) {
+            p.comboStep = 2;
+            p.comboResetTimer = 0.2;
+            this.executeGroundAttack('punch');
           }
         }
       }
@@ -1951,6 +2213,7 @@ export class BusBeatEmUpEngine {
 
       if (isRestingOnSeat && nearUnusedSeat) {
         p.anim = 'seatRest';
+        p.animDuration = undefined;
         p.animTimer += dt;
         p.vx = 0;
         p.vy = 0;
@@ -1960,11 +2223,9 @@ export class BusBeatEmUpEngine {
           p.score += 50;
           this.usedSeatSlots.add(nearUnusedSeat.slot);
           this.seatRestHoldTimer = 0;
-          p.anim = 'idle';
+          this.setPlayerAnim('idle', 0);
           audio.playHeal();
           this.spawnParticles(p.x, p.y, 18, '#34d399', 12);
-          this.addFloatingText('DESCANSO! +18 HP', p.x, p.y, 38, '#34d399');
-          this.pushCombatLog('Descanso no assento (+18 HP)', 'emerald', 4.2);
           this.pushHudSnapshot();
         }
       } else {
@@ -1988,6 +2249,7 @@ export class BusBeatEmUpEngine {
         else if (ix < -0.1) p.facing = -1;
 
         const onSeatElevated = Boolean(this.getEmptySeatUnderPlayer(156) && Math.abs(p.z - 24) <= 2);
+        p.animDuration = undefined;
         if (p.z > 0 && !onSeatElevated) {
           p.anim = 'jump';
         } else if (Math.abs(ix) > 0.05 || Math.abs(iy) > 0.05) {
@@ -2009,6 +2271,7 @@ export class BusBeatEmUpEngine {
         p.z = 24;
         p.vz = 0;
         if (p.anim === 'jump' || p.anim === 'jumpKick') {
+          p.animDuration = undefined;
           p.anim = Math.abs(ix) > 0.05 || Math.abs(iy) > 0.05 ? 'walk' : 'idle';
         }
       } else if (p.z > 0 || p.vz !== 0) {
@@ -2018,6 +2281,7 @@ export class BusBeatEmUpEngine {
           p.z = 24;
           p.vz = 0;
           if (p.anim === 'jump' || p.anim === 'jumpKick') {
+            p.animDuration = undefined;
             p.anim = 'idle';
           }
         } else if (p.z <= 0) {
@@ -2025,9 +2289,9 @@ export class BusBeatEmUpEngine {
           p.vz = 0;
           if (p.anim === 'railSlam') {
             this.resolveRailSlamImpact();
-            p.anim = 'idle';
-            p.animTimer = 0;
+            this.setPlayerAnim('idle', 0);
           } else if (p.anim === 'jump' || p.anim === 'jumpKick') {
+            p.animDuration = undefined;
             p.anim = 'idle';
           }
         }
@@ -2067,6 +2331,7 @@ export class BusBeatEmUpEngine {
     const isHeadphoneWhip = p.anim === 'headphoneWhip';
     const isCane = p.anim === 'cane';
     const isKickFinisher = p.anim === 'kickFinisher';
+    const isHeavyPunch = p.anim === 'heavyPunch';
     const isUppercutFinisher = p.anim === 'punch3';
     const isKick = p.anim === 'kick' || p.anim === 'jumpKick' || isKickFinisher;
     const isFinisher = isUppercutFinisher || isKickFinisher;
@@ -2090,9 +2355,11 @@ export class BusBeatEmUpEngine {
                 ? 50
                 : isCane
                   ? 48
-                  : isKick
-                    ? 40
-                    : 34;
+                  : isHeavyPunch
+                    ? 42
+                    : isKick
+                      ? 40
+                      : 34;
     const laneTol = isSoundSpecial
       ? 46
       : isRailSpin
@@ -2101,13 +2368,15 @@ export class BusBeatEmUpEngine {
           ? 32
           : isHeadphoneWhip || isKickFinisher
             ? 28
-            : 20;
+            : isHeavyPunch
+              ? 24
+              : 20;
     // Cane damage reduced by 12% (22 -> 19); Headphone Whip does low ranged rock damage (9)
     const baseDamage = isSoundSpecial
       ? 28
       : isSpecial
         ? 24
-        : isKickFinisher
+        : isKickFinisher || isHeavyPunch
           ? 21
           : isUppercutFinisher
             ? 19
@@ -2132,6 +2401,8 @@ export class BusBeatEmUpEngine {
     let hitCount = 0;
     let cleanHitCount = 0;
     let landedStrongHit = false;
+    let landedMetallicHit = false;
+    let landedGuardBreak = false;
     let usedCane = false;
     let counterHit = false;
 
@@ -2150,7 +2421,6 @@ export class BusBeatEmUpEngine {
 
       if (e.type === 'industria' && e.stinkActive && !isSpecial && !isSoundSpecial) {
         audio.playBlock();
-        this.addFloatingText('FEDOR! USE DESODORANTE!', e.x, e.y, e.z + 40, '#a3e635');
         e.hp = Math.max(1, e.hp - 1);
         hitCount++;
         cleanHitCount++;
@@ -2159,7 +2429,6 @@ export class BusBeatEmUpEngine {
 
       if (e.type === 'industria' && e.stinkActive && isSoundSpecial) {
         e.stinkActive = false;
-        this.addFloatingText('ODOR DISSIPADO!', e.x, e.y, e.z + 44, '#67e8f9');
       }
 
       const playerInFrontOfStudent =
@@ -2196,19 +2465,18 @@ export class BusBeatEmUpEngine {
             hitCount++;
             cleanHitCount++;
             landedStrongHit = true;
-            audio.playHeavyHit();
+            landedGuardBreak = true;
+            landedMetallicHit = true;
+            audio.playMetallicImpact(true);
             this.triggerShake(0.16, 3.2);
-            this.addFloatingText('GUARDA QUEBRADA!', e.x, e.y, e.z + 44, '#38bdf8');
             if (e.hp <= 0) {
               this.handleEnemyDefeated(e);
             }
             continue;
           }
         }
-        this.addFloatingText('MOCHILA BLOQUEOU!', e.x, e.y, e.z + 40, '#60a5fa');
         p.vx = -p.facing * 170;
-        p.anim = 'hurt';
-        p.animTimer = 0.22;
+        this.setPlayerAnim('hurt', 0.22);
         this.damagePlayer(5);
         hitCount++;
         continue;
@@ -2218,55 +2486,56 @@ export class BusBeatEmUpEngine {
         e.aiState === 'windup' &&
         (isFinisher || isKick || isCane || isSpecial || isSoundSpecial || isBagSpin)
       ) {
+        void counterHit;
         counterHit = true;
       }
 
       let effectiveDamage = damage;
-      if (e.type === 'boss_cobrador_blindado' && e.guardMax > 0) {
+      if (e.guardMax > 0) {
         if (e.guardBrokenTimer > 0) {
-          effectiveDamage = Math.round(damage * 1.35);
-        } else if (e.guardHp > 0 && !breaksBarrier && Math.sign(p.x - e.x) === e.facing) {
-          effectiveDamage = Math.max(1, Math.round(damage * 0.7));
+          effectiveDamage = Math.round(damage * (e.isBoss ? 1.35 : 1.15));
+        } else if (e.guardHp > 0 && !breaksBarrier && (e.isBoss || Math.sign(p.x - e.x) === e.facing)) {
+          effectiveDamage = Math.max(1, Math.round(damage * (e.isBoss ? 0.7 : 0.85)));
         }
       }
 
       let guardBrokenNow = false;
+      const isArmoredOrTurnstileTarget =
+        e.type === 'boss_cobrador_blindado' ||
+        e.type === 'boss_cobrador' ||
+        e.hasFrontBarrier;
       if (e.guardMax > 0 && e.guardHp > 0 && e.guardBrokenTimer <= 0) {
         const guardDamage = breaksBarrier ? (e.isBoss ? 2 : 3) : 1;
         e.guardHp = Math.max(0, e.guardHp - guardDamage);
         if (e.guardHp === 0) {
           guardBrokenNow = true;
+          landedGuardBreak = true;
           e.guardBrokenTimer = e.isBoss ? 5.0 : 4.5;
           e.hasFrontBarrier = false;
           this.spawnHitSparks(e.x, e.y, e.z + 22, dx >= 0 ? 1 : -1, {
             target: 'barrier',
             strong: true,
           });
-          this.addFloatingText(
-            e.isBoss ? 'BLINDAGEM QUEBRADA!' : 'GUARDA QUEBRADA!',
-            e.x,
-            e.y,
-            e.z + 50,
-            '#38bdf8'
-          );
-          this.pushCombatLog(
-            e.isBoss ? 'Blindagem do chefe quebrada!' : 'Guarda quebrada!',
-            'cyan',
-            4.2
-          );
         }
+      }
+      if (isArmoredOrTurnstileTarget || guardBrokenNow || isRailSpin) {
+        landedMetallicHit = true;
       }
 
       e.hp -= effectiveDamage;
-      e.hitFlashTimer = 0.14;
+      e.hitFlashTimer = isHeavyPunch ? 0.18 : 0.14;
       e.aiState = 'hurt';
+      e.heavyHurtTimer =
+        isHeavyPunch || isFinisher || isSpecial || isSoundSpecial ? 0.5 : 0;
       e.stateTimer = guardBrokenNow
         ? e.isBoss
           ? 1.6
           : 1.35
-        : isFinisher || isKick || isSpecial || isSoundSpecial || isRailSpin || isBagSpin || isHeadphoneWhip
-          ? 0.42
-          : 0.28;
+        : isHeavyPunch
+          ? 0.52
+          : isFinisher || isKick || isSpecial || isSoundSpecial || isRailSpin || isBagSpin || isHeadphoneWhip
+            ? 0.42
+            : 0.28;
       const kbDir = dx >= 0 ? 1 : -1;
       const windKbMult = this.expressWindTimer > 0 ? 1.35 : 1;
       e.vx =
@@ -2279,23 +2548,32 @@ export class BusBeatEmUpEngine {
               ? 185
               : isUppercutFinisher
                 ? 170
-                : isKick || isSpecial || isRailSpin
-                  ? 160
-                  : isHeadphoneWhip
-                    ? 115
-                    : 75) *
+                : isHeavyPunch
+                  ? 165
+                  : isKick || isSpecial || isRailSpin
+                    ? 160
+                    : isHeadphoneWhip
+                      ? 115
+                      : 75) *
         windKbMult;
       if (isKickFinisher || isUppercutFinisher || isSoundSpecial) {
         e.vz = isUppercutFinisher ? 135 : 120;
         e.z = Math.max(e.z, 2);
+      } else if (isHeavyPunch) {
+        e.vz = 58;
+        e.z = Math.max(e.z, 1);
       }
       hitCount++;
       cleanHitCount++;
+      if (isHeavyPunch) {
+        this.trackDailyMission('land_heavy_punches', 1);
+      }
 
       if (isCane) usedCane = true;
 
       const isStrongHit =
         guardBrokenNow ||
+        isHeavyPunch ||
         isFinisher ||
         isKick ||
         isSpecial ||
@@ -2307,40 +2585,31 @@ export class BusBeatEmUpEngine {
         landedStrongHit = true;
       }
       if (isStrongHit) {
-        audio.playHeavyHit();
-        this.hitstopTimer = isFinisher || isSoundSpecial || guardBrokenNow ? 0.062 : 0.055;
+        this.hitstopTimer =
+          isHeavyPunch || isFinisher || isSoundSpecial || guardBrokenNow ? 0.058 : 0.052;
         this.triggerShake(
-          isFinisher || isSoundSpecial || guardBrokenNow ? 0.18 : 0.12,
-          isFinisher || isSoundSpecial || guardBrokenNow ? 3.8 : 2.5
+          isHeavyPunch || isFinisher || isSoundSpecial || guardBrokenNow ? 0.18 : 0.12,
+          isHeavyPunch || isFinisher || isSoundSpecial || guardBrokenNow ? 3.8 : 2.5
         );
       } else {
-        if (!isHeadphoneWhip) audio.playPunch();
         this.hitstopTimer = 0.036;
       }
 
-      // Clean 16-bit yellow/white impact starburst at contact point + crisp metallic pixel sparks
+      // Clean 16-bit yellow/white impact starburst at exact contact point + crisp sparks
+      const collisionX = isHeavyPunch ? p.x + p.facing * 26 : e.x - kbDir * 6;
       this.impactFlashes.push({
-        x: e.x - kbDir * 6,
+        x: collisionX,
         y: e.y - e.z - 26,
         life: 0.14,
         maxLife: 0.14,
         strong: isStrongHit || isHeadphoneWhip || e.isBoss,
       });
-      this.spawnHitSparks(e.x - kbDir * 5, e.y, e.z + 22, kbDir, {
+      this.spawnHitSparks(collisionX, e.y, e.z + 23, kbDir, {
         target: e.isBoss ? 'turnstile_boss' : 'passenger',
         bossType: e.type,
         strong: isStrongHit || isHeadphoneWhip,
         finisher: isFinisher || isSoundSpecial,
       });
-      if (isFinisher) {
-        this.addFloatingText(
-          isKickFinisher ? 'CHUTAÇO!' : 'GANCHO!',
-          e.x,
-          e.y,
-          e.z + 44,
-          '#fde047'
-        );
-      }
       this.addFloatingText(`-${effectiveDamage}`, e.x, e.y, e.z + 32, guardBrokenNow ? '#38bdf8' : '#f8fafc');
       p.score += effectiveDamage * 2;
 
@@ -2348,7 +2617,6 @@ export class BusBeatEmUpEngine {
         this.bossBulletTimeTimer = Math.max(this.bossBulletTimeTimer, 0.48);
         this.hitstopTimer = Math.max(this.hitstopTimer, 0.055);
         this.spawnParticles(e.x, e.y, e.z + 24, '#fde047', 10);
-        this.addFloatingText('GARÇA!', e.x, e.y, e.z + 48, '#fde047');
       }
 
       if (e.hp <= 0) {
@@ -2362,18 +2630,28 @@ export class BusBeatEmUpEngine {
       if (cleanHitCount > 0) {
         this.registerHitChain(cleanHitCount);
         vibrateHit(landedStrongHit);
+        if (landedMetallicHit) {
+          audio.playMetallicImpact(landedGuardBreak || landedStrongHit);
+        }
+        if (usedCane) {
+          audio.playCaneCrack();
+        } else if (isHeadphoneWhip) {
+          audio.playWhipImpact();
+        } else if (isBagSpin) {
+          audio.playBagThump();
+        } else if (isKickFinisher || isSpecial || p.anim === 'jumpKick') {
+          audio.playKickImpact(true);
+        } else if (isKick) {
+          audio.playKickImpact(false);
+        } else if (isUppercutFinisher || isHeavyPunch) {
+          audio.playUppercutCrack();
+        } else if (isSoundSpecial || isRailSpin) {
+          audio.playHeavyHit();
+        } else {
+          audio.playPunchSnap();
+        }
       }
       p.attackHasHit = true;
-      if (counterHit && this.perfectTimingCooldown <= 0) {
-        this.perfectTimingCooldown = 2.0;
-        this.pushScreenNotification(
-          'Perfect Timing!',
-          'cyan',
-          p.x + p.facing * 24,
-          p.y,
-          p.z + 54
-        );
-      }
       if (!isSpecial && !isSoundSpecial) {
         const energyGain = isFinisher || isCane || isRailSpin || isBagSpin ? 14 : 8;
         p.specialEnergy = Math.min(100, p.specialEnergy + energyGain);
@@ -2400,27 +2678,25 @@ export class BusBeatEmUpEngine {
       }
       if (usedCane && p.caneCharges > 0) {
         p.caneCharges--;
-        if (p.caneCharges === 0) {
-          this.addFloatingText('BENGALA QUEBROU!', p.x, p.y, p.z + 36, '#fb923c');
-        }
       }
     }
   }
 
   private handleEnemyDefeated(e: EnemyEntity) {
     const p = this.player;
+    const prevComboMultiplier = p.comboMultiplier;
     p.enemiesDefeated++;
     p.comboStreak += 1;
     p.comboMultiplier = p.comboStreak < 2 ? 1 : p.comboStreak;
+
+    if (p.comboMultiplier > 10 && p.comboMultiplier > prevComboMultiplier) {
+      this.triggerComboImpact(p.comboMultiplier);
+    }
 
     const basePts = e.isBoss ? 800 : 120;
     const totalPts = basePts * p.comboMultiplier;
     p.score += totalPts;
     this.spawnParticles(e.x, e.y, 16, '#f97316', 6);
-
-    if (p.comboMultiplier === 7 && !p.headphoneWhipUsed) {
-      this.addFloatingText('FONE ROCK!', p.x, p.y, p.z + 52, '#fde047');
-    }
 
     if (p.comboMultiplier >= 2) {
       this.comboFlickerIntensity = Math.min(
@@ -2428,17 +2704,6 @@ export class BusBeatEmUpEngine {
         Math.max(this.comboFlickerIntensity, 0.42 + p.comboMultiplier * 0.06)
       );
       this.comboFlickerTimer = Math.max(this.comboFlickerTimer, 1.0);
-      this.addFloatingText(
-        `COMBO x${p.comboMultiplier}! +${totalPts}`,
-        e.x,
-        e.y,
-        42,
-        p.comboMultiplier >= 10
-          ? '#f43f5e'
-          : p.comboMultiplier > 5
-            ? '#fb923c'
-            : '#facc15'
-      );
     }
 
     if (p.comboMultiplier > 5) {
@@ -2451,6 +2716,10 @@ export class BusBeatEmUpEngine {
       const progress = recordDefeatedEnemyMilestone(1);
       if (progress.totalDefeated >= 50) {
         this.unlockAchievement('derrotar_50');
+      }
+      this.trackDailyMission('defeat_passengers', 1);
+      if (e.isBoss) {
+        this.trackDailyMission('defeat_bosses', 1);
       }
     }
 
@@ -2473,7 +2742,6 @@ export class BusBeatEmUpEngine {
 
     if (e.isChaser) {
       this.fiscalChasing = false;
-      this.addFloatingText('FISCAL KO! +400', e.x, e.y, 38, '#38bdf8');
       p.score += 280;
     }
 
@@ -2482,31 +2750,29 @@ export class BusBeatEmUpEngine {
       p.shieldHits = 5;
       audio.playMakeup();
       this.spawnParticles(p.x, p.y, p.z + 20, '#38bdf8', 14);
-      this.addFloatingText('ESCUDO MOCHILA (5)!', p.x, p.y, p.z + 44, '#38bdf8');
     }
 
     if (p.enemiesDefeated > 0 && p.enemiesDefeated % 5 === 0) {
       p.strengthBuffTimer = 10 + this.shopLoadout.buffDurationBonus;
       audio.playMakeup();
       this.spawnParticles(p.x, p.y, p.z + 20, '#f97316', 18);
-      this.addFloatingText('FORÇA 2x!', p.x, p.y, p.z + 52, '#facc15');
     }
 
     let drop: ItemType | undefined = e.guaranteedDrop;
     if (!drop) {
       const r = Math.random();
-      if (e.type === 'idosa' && (p.caneCharges === 0 || r < 0.75)) {
+      if (e.type === 'idosa' && r < 0.25) {
         drop = 'bengala';
-      } else if (e.type === 'vendedor' && (p.hp < 70 || r < 0.75)) {
-        drop = r < 0.25 ? 'bilhete_dourado' : 'chocolate';
-      } else if (e.type === 'estudante' && r < 0.85) {
+      } else if (e.type === 'vendedor' && r < 0.28) {
+        drop = r < 0.06 ? 'bilhete_dourado' : 'chocolate';
+      } else if (e.type === 'estudante' && r < 0.35) {
         drop = 'creditos';
-      } else if (e.type === 'patricinha') {
-        drop = p.deodorantCount === 0 || r < 0.55 ? 'desodorante' : 'maquiagem';
-      } else if (e.type === 'tio_audio') {
-        drop = r < 0.6 ? 'cafezinho' : 'creditos';
-      } else if (e.type === 'skatista') {
-        drop = r < 0.65 ? 'cafezinho' : 'maquiagem';
+      } else if (e.type === 'patricinha' && r < 0.25) {
+        drop = r < 0.14 ? 'desodorante' : 'maquiagem';
+      } else if (e.type === 'tio_audio' && r < 0.22) {
+        drop = r < 0.13 ? 'cafezinho' : 'creditos';
+      } else if (e.type === 'skatista' && r < 0.22) {
+        drop = r < 0.14 ? 'cafezinho' : 'maquiagem';
       }
     }
 
@@ -2515,7 +2781,11 @@ export class BusBeatEmUpEngine {
     }
 
     if (e.isBoss) {
-      this.triggerBossFinisher(e);
+      if (!this.bossFinisherState) {
+        this.startBossFinisher(e);
+      } else {
+        this.triggerBossFinisher(e);
+      }
     }
     this.pushHudSnapshot();
   }
@@ -2577,37 +2847,370 @@ export class BusBeatEmUpEngine {
     };
   }
 
-  private triggerBossFinisher(e: EnemyEntity) {
+  private startBossFinisher(e: EnemyEntity) {
+    const p = this.player;
+    const allKinds: BossFinisherKind[] = [
+      'piledriver',
+      'giant_swing',
+      'ground_pound',
+      'collar_knee',
+    ];
+    const candidates = this.lastBossFinisherKind
+      ? allKinds.filter((k) => k !== this.lastBossFinisherKind)
+      : allKinds;
+    const kind = candidates[Math.floor(Math.random() * candidates.length)];
+    this.lastBossFinisherKind = kind;
+
+    const durationMap: Record<BossFinisherKind, number> = {
+      piledriver: 1.25,
+      giant_swing: 1.55,
+      ground_pound: 1.35,
+      collar_knee: 1.20,
+    };
+    const duration = durationMap[kind];
+
+    const bounds = this.getActiveWaveBounds();
+    const minAnchorX = Math.max(bounds.minX + 52, this.camX + 58);
+    const maxAnchorX = Math.min(bounds.maxX - 52, this.camX + INTERNAL_WIDTH - 58);
+    const anchorX = Math.max(minAnchorX, Math.min(maxAnchorX, p.x));
+    const anchorY = Math.max(AISLE_MIN_Y + 8, Math.min(AISLE_MAX_Y - 8, p.y));
+    const facing: 1 | -1 = e.x >= anchorX ? 1 : -1;
+
+    p.x = anchorX;
+    p.y = anchorY;
+    p.z = 0;
+    p.vx = 0;
+    p.vy = 0;
+    p.vz = 0;
+    p.facing = facing;
+    p.invulnTimer = Math.max(p.invulnTimer, duration + 0.65);
+    p.attackHasHit = true;
+    this.bufferedAction = null;
+    this.bufferTimer = 0;
+
+    const animMap: Record<BossFinisherKind, PlayerAnimState> = {
+      piledriver: 'finisherPiledriver',
+      giant_swing: 'finisherGiantSwing',
+      ground_pound: 'finisherGroundPound',
+      collar_knee: 'finisherCollarKnee',
+    };
+    this.setPlayerAnim(animMap[kind], duration);
+
+    e.aiState = 'finisherVictim';
+    e.finisherKind = kind;
+    e.finisherProg = 0;
+    e.finisherPhaseAngle = 0;
+    e.facing = (facing === 1 ? -1 : 1) as 1 | -1;
+    e.vx = 0;
+    e.vy = 0;
+    e.vz = 0;
+    e.z = 0;
+    e.hitFlashTimer = 0;
+    e.heavyHurtTimer = 0;
+    e.speechText = '';
+    e.speechTimer = 0;
+
+    // Immediately interrupt any other active boss/enemy windups or dashes
+    for (const other of this.enemies) {
+      if (other.id === e.id || other.hp <= 0) continue;
+      if (
+        other.aiState === 'windup' ||
+        other.aiState === 'spinWindup' ||
+        other.aiState === 'skateWindup' ||
+        other.aiState === 'attack' ||
+        other.aiState === 'spinAttack' ||
+        other.aiState === 'skateDash'
+      ) {
+        other.aiState = 'approach';
+        other.stateTimer = 0;
+      }
+      other.attackCooldown = Math.max(other.attackCooldown, 1.4);
+    }
+
+    this.bossFinisherState = {
+      victimId: e.id,
+      kind,
+      elapsed: 0,
+      duration,
+      anchorX,
+      anchorY,
+      facing,
+      didGrabFx: true,
+      swingWhooshCount: 0,
+      poundHitCount: 0,
+      kneeHitDone: false,
+      slamImpactDone: false,
+    };
+
+    audio.playGrappleGrab();
+    this.hitstopTimer = 0.05;
+    this.triggerShake(0.14, 3.2);
+    this.spawnParticles(anchorX + facing * 12, anchorY, 18, '#fde047', 10);
+  }
+
+  private updateBossFinisher(dt: number) {
+    const fs = this.bossFinisherState;
+    if (!fs) return;
+    const p = this.player;
+    const e = this.enemies.find((en) => en.id === fs.victimId);
+
+    if (!e) {
+      this.bossFinisherState = null;
+      this.setPlayerAnim('idle', 0);
+      p.z = 0;
+      p.vz = 0;
+      return;
+    }
+
+    fs.elapsed += dt;
+    const prog = Math.max(0, Math.min(1, fs.elapsed / fs.duration));
+    p.animTimer = Math.max(0, fs.duration - fs.elapsed);
+    p.invulnTimer = Math.max(p.invulnTimer, 0.4);
+    e.finisherProg = prog;
+    e.hitFlashTimer = 0;
+
+    if (fs.kind === 'piledriver') {
+      if (prog < 0.22) {
+        const t = prog / 0.22;
+        e.x = fs.anchorX + fs.facing * (18 - 10 * t);
+        e.y = fs.anchorY;
+        e.z = 6 * t;
+        p.x = fs.anchorX;
+        p.y = fs.anchorY;
+        p.z = 0;
+      } else if (prog < 0.56) {
+        const lift = Math.min(1, (prog - 0.22) / 0.2);
+        e.x = fs.anchorX + fs.facing * 6;
+        e.y = fs.anchorY + 0.5;
+        e.z = 6 + 28 * lift;
+        p.z = 8 * lift;
+      } else if (prog < 0.8) {
+        const slamT = Math.min(1, (prog - 0.56) / 0.08);
+        e.x = fs.anchorX + fs.facing * 8;
+        e.y = fs.anchorY + 0.5;
+        e.z = 34 * (1 - slamT);
+        p.z = 8 * (1 - slamT);
+        if (prog >= 0.62 && !fs.slamImpactDone) {
+          fs.slamImpactDone = true;
+          audio.playFinisherSlam();
+          vibrateHit(true);
+          this.triggerShake(0.32, 7.5);
+          this.impactFlashes.push({
+            x: e.x,
+            y: e.y - 6,
+            life: 0.22,
+            maxLife: 0.22,
+            strong: true,
+          });
+          this.spawnParticles(e.x, e.y, 4, '#fde047', 16);
+          this.spawnHitSparks(e.x, e.y, 4, fs.facing, {
+            target: 'turnstile_boss',
+            bossType: e.type,
+            strong: true,
+            finisher: true,
+          });
+        }
+      } else {
+        e.x = fs.anchorX + fs.facing * 12;
+        e.y = fs.anchorY + 0.5;
+        e.z = 0;
+        p.z = 0;
+      }
+    } else if (fs.kind === 'giant_swing') {
+      if (prog < 0.2) {
+        const t = prog / 0.2;
+        e.x = fs.anchorX + fs.facing * (20 - 4 * t);
+        e.y = fs.anchorY;
+        e.z = 4 * t;
+      } else if (prog < 0.8) {
+        const spinProg = (prog - 0.2) / 0.6;
+        const angle = spinProg * Math.PI * 4 * fs.facing;
+        e.finisherPhaseAngle = angle;
+        e.x = fs.anchorX + Math.cos(angle) * 34;
+        e.y = fs.anchorY + Math.sin(angle) * 14;
+        e.z = 16 + Math.sin(spinProg * Math.PI) * 8;
+        if (
+          (spinProg >= 0.1 && fs.swingWhooshCount === 0) ||
+          (spinProg >= 0.56 && fs.swingWhooshCount === 1)
+        ) {
+          fs.swingWhooshCount++;
+          audio.playGiantSwingWhoosh();
+          this.spawnParticles(e.x, e.y, e.z + 10, '#38bdf8', 8);
+        }
+      } else {
+        const rel = (prog - 0.8) / 0.2;
+        e.finisherPhaseAngle = 0;
+        e.x = fs.anchorX + fs.facing * (34 + 28 * rel);
+        e.y = fs.anchorY;
+        e.z = 16 * (1 - rel * 0.35);
+        if (!fs.slamImpactDone) {
+          fs.slamImpactDone = true;
+          audio.playFinisherSlam();
+          vibrateHit(true);
+          this.triggerShake(0.24, 5.5);
+          this.spawnHitSparks(e.x, e.y, e.z + 10, fs.facing, {
+            target: 'turnstile_boss',
+            bossType: e.type,
+            strong: true,
+            finisher: true,
+          });
+        }
+      }
+    } else if (fs.kind === 'ground_pound') {
+      e.x = fs.anchorX + fs.facing * 10;
+      e.y = fs.anchorY - 1;
+      e.z = 0;
+      p.x = fs.anchorX;
+      p.y = fs.anchorY;
+      p.z = 0;
+      if (prog >= 0.34 && fs.poundHitCount === 0) {
+        fs.poundHitCount = 1;
+        audio.playHeavyHit();
+        vibrateHit(true);
+        this.triggerShake(0.18, 4.8);
+        this.impactFlashes.push({
+          x: e.x,
+          y: e.y - 10,
+          life: 0.16,
+          maxLife: 0.16,
+          strong: true,
+        });
+        this.spawnHitSparks(e.x, e.y, 10, fs.facing, {
+          target: 'turnstile_boss',
+          bossType: e.type,
+          strong: true,
+        });
+      } else if (prog >= 0.66 && fs.poundHitCount === 1) {
+        fs.poundHitCount = 2;
+        audio.playFinisherSlam();
+        vibrateHit(true);
+        this.triggerShake(0.28, 6.8);
+        this.impactFlashes.push({
+          x: e.x,
+          y: e.y - 10,
+          life: 0.22,
+          maxLife: 0.22,
+          strong: true,
+        });
+        this.spawnParticles(e.x, e.y, 8, '#fde047', 14);
+        this.spawnHitSparks(e.x, e.y, 10, fs.facing, {
+          target: 'turnstile_boss',
+          bossType: e.type,
+          strong: true,
+          finisher: true,
+        });
+      }
+    } else if (fs.kind === 'collar_knee') {
+      if (prog < 0.28) {
+        const t = prog / 0.28;
+        e.x = fs.anchorX + fs.facing * (24 - 11 * t);
+        e.y = fs.anchorY;
+        e.z = 0;
+      } else if (prog < 0.64) {
+        e.x = fs.anchorX + fs.facing * 14;
+        e.y = fs.anchorY;
+        e.z = 2;
+        if (prog >= 0.44 && !fs.kneeHitDone) {
+          fs.kneeHitDone = true;
+          audio.playKickImpact(true);
+          audio.playHeavyHit();
+          vibrateHit(true);
+          this.triggerShake(0.22, 5.5);
+          this.impactFlashes.push({
+            x: e.x - fs.facing * 4,
+            y: e.y - 22,
+            life: 0.18,
+            maxLife: 0.18,
+            strong: true,
+          });
+          this.spawnHitSparks(e.x, e.y, 20, fs.facing, {
+            target: 'turnstile_boss',
+            bossType: e.type,
+            strong: true,
+            finisher: true,
+          });
+        }
+      } else {
+        const sh = (prog - 0.64) / 0.36;
+        e.x = fs.anchorX + fs.facing * (14 + 20 * sh);
+        e.y = fs.anchorY;
+        e.z = 5 * Math.sin(sh * Math.PI);
+        if (prog >= 0.86 && !fs.slamImpactDone) {
+          fs.slamImpactDone = true;
+          audio.playFinisherSlam();
+          this.triggerShake(0.22, 5.0);
+          this.spawnParticles(e.x, e.y, 4, '#fde047', 12);
+        }
+      }
+    }
+
+    e.x = Math.max(24, Math.min(this.line.busLength - 32, e.x));
+    e.y = Math.max(AISLE_MIN_Y, Math.min(AISLE_MAX_Y, e.y));
+
+    if (prog >= 1) {
+      const completedKind = fs.kind;
+      const pushDir = fs.facing;
+      this.bossFinisherState = null;
+      e.finisherKind = undefined;
+      e.finisherProg = undefined;
+      e.finisherPhaseAngle = undefined;
+      this.setPlayerAnim('idle', 0);
+      p.z = 0;
+      p.vz = 0;
+      p.vx = 0;
+      p.vy = 0;
+      this.triggerBossFinisher(e, completedKind, pushDir);
+    }
+  }
+
+  private triggerBossFinisher(
+    e: EnemyEntity,
+    finisherKind?: BossFinisherKind,
+    pushDir?: 1 | -1
+  ) {
     const theme = this.getBossFinisherTheme(e);
-    this.hitstopTimer = 0.14;
-    this.bossKoFlashTimer = 0.45;
-    this.bossKoTrailTimer = 0.04;
-    this.triggerShake(0.55, 8);
-    audio.playBossFinisher();
-    vibrateHit(true);
+    const isFinalBoss = !this.hasRemainingBosses(e);
+    const tossDir = pushDir ?? (-e.facing as 1 | -1);
 
     e.aiState = 'knockdown';
-    e.stateTimer = 1.15;
-    e.vz = 220;
+    e.stateTimer = isFinalBoss ? 0.88 : 0.46;
+    e.vz = finisherKind === 'giant_swing' ? 195 : isFinalBoss ? 175 : 115;
     e.z = Math.max(e.z, 2);
-    e.vx = -e.facing * 155;
+    e.vx = tossDir * (finisherKind === 'giant_swing' ? 210 : 120);
     e.hitFlashTimer = 0.25;
     e.speechText = theme.koSpeech;
-    e.speechTimer = 1.15;
+    e.speechTimer = isFinalBoss ? 1.05 : 0.85;
 
-    this.bossFinisherEffects.push({
-      x: e.x,
-      y: e.y,
-      z: e.z,
-      life: 0.9,
-      maxLife: 0.9,
-      label: '',
-      primaryColor: theme.primaryColor,
-      secondaryColor: theme.secondaryColor,
-      style: theme.style,
-    });
-    this.spawnParticles(e.x, e.y, e.z + 20, '#facc15', 16);
-    this.spawnHitSparks(e.x, e.y, e.z + 22, -e.facing, {
+    if (isFinalBoss) {
+      this.hitstopTimer = 0.2;
+      this.bossBulletTimeTimer = Math.max(this.bossBulletTimeTimer, 0.78);
+      this.bossKoFlashTimer = 0.55;
+      this.bossKoTrailTimer = 0.035;
+      this.triggerShake(0.6, 8.5);
+      audio.playBossFinisher();
+      vibrateHit(true);
+
+      this.bossFinisherEffects.push({
+        x: e.x,
+        y: e.y,
+        z: e.z,
+        life: 0.95,
+        maxLife: 0.95,
+        label: 'K.O.!',
+        primaryColor: theme.primaryColor,
+        secondaryColor: theme.secondaryColor,
+        style: theme.style,
+      });
+    } else {
+      this.bossKoTrailTimer = 0.06;
+      this.triggerShake(0.28, 5.5);
+      audio.playHeavyHit();
+      vibrateHit(true);
+    }
+
+    this.spawnParticles(e.x, e.y, e.z + 20, '#facc15', isFinalBoss ? 22 : 14);
+    this.spawnParticles(e.x, e.y, e.z + 22, theme.primaryColor, isFinalBoss ? 14 : 9);
+    this.spawnHitSparks(e.x, e.y, e.z + 22, tossDir, {
       target: 'turnstile_boss',
       bossType: e.type,
       strong: true,
@@ -2617,29 +3220,38 @@ export class BusBeatEmUpEngine {
 
   private spawnBossKoBurst(e: EnemyEntity) {
     const theme = this.getBossFinisherTheme(e);
+    const isFinalBoss = !this.hasRemainingBosses(e);
     audio.playHeavyHit();
-    this.triggerShake(0.45, 7);
-    this.bossKoFlashTimer = 0.35;
-    this.bossKoOverlay = {
-      life: 1.35,
-      maxLife: 1.35,
-      primaryColor: theme.primaryColor,
-      secondaryColor: theme.secondaryColor,
-      style: theme.style,
-    };
-    this.bossFinisherEffects.push({
-      x: e.x,
-      y: e.y,
-      z: e.z,
-      life: 1.0,
-      maxLife: 1.0,
-      label: '',
-      primaryColor: theme.primaryColor,
-      secondaryColor: theme.secondaryColor,
-      style: theme.style,
-    });
-    this.spawnParticles(e.x, e.y, e.z + 18, '#facc15', 14);
-    this.spawnParticles(e.x, e.y, e.z + 18, theme.primaryColor, 12);
+
+    if (isFinalBoss) {
+      this.hitstopTimer = Math.max(this.hitstopTimer, 0.085);
+      this.triggerShake(0.52, 8.5);
+      this.bossKoFlashTimer = 0.42;
+      this.bossKoOverlay = {
+        life: 1.4,
+        maxLife: 1.4,
+        primaryColor: theme.primaryColor,
+        secondaryColor: theme.secondaryColor,
+        style: theme.style,
+      };
+      this.bossFinisherEffects.push({
+        x: e.x,
+        y: e.y,
+        z: e.z,
+        life: 1.05,
+        maxLife: 1.05,
+        label: '',
+        primaryColor: theme.primaryColor,
+        secondaryColor: theme.secondaryColor,
+        style: theme.style,
+      });
+    } else {
+      this.triggerShake(0.26, 4.8);
+    }
+
+    this.spawnParticles(e.x, e.y, e.z + 18, '#facc15', isFinalBoss ? 20 : 12);
+    this.spawnParticles(e.x, e.y, e.z + 18, theme.primaryColor, isFinalBoss ? 16 : 8);
+    this.spawnParticles(e.x, e.y, e.z + 20, '#f97316', isFinalBoss ? 12 : 6);
     this.spawnHitSparks(e.x, e.y, e.z + 18, -e.facing, {
       target: 'turnstile_boss',
       bossType: e.type,
@@ -2647,11 +3259,9 @@ export class BusBeatEmUpEngine {
       finisher: true,
     });
 
-    const hasOtherActiveBoss = this.enemies.some((other) => other !== e && other.isBoss && other.hp > 0);
-    if (!hasOtherActiveBoss && this.player.hp > 0) {
+    if (isFinalBoss && this.player.hp > 0) {
       const p = this.player;
-      p.anim = 'victory';
-      p.animTimer = 1.0;
+      this.setPlayerAnim('victory', 1.0);
       p.vx = 0;
       p.vy = 0;
       p.z = 0;
@@ -2672,8 +3282,6 @@ export class BusBeatEmUpEngine {
     this.triggerShake(0.45, 7);
     this.comboTintTimer = 0.75;
     this.spawnParticles(p.x, p.y, p.z + 22, '#6366f1', 22);
-    this.addFloatingText('MODO RAGE!', p.x, p.y, p.z + 56, '#f43f5e');
-    this.pushCombatLog('Modo Rage ativado (15s)!', 'rose', 4.8);
 
     const bounds = this.getActiveWaveBounds();
     const activeRegulars = this.enemies.filter(
@@ -2708,24 +3316,21 @@ export class BusBeatEmUpEngine {
     }
   }
 
-  private resetComboStreak(showNotice = true) {
+  private resetComboStreak() {
     const p = this.player;
-    const hadCombo = p.comboMultiplier >= 2;
     p.comboStreak = 0;
     p.comboMultiplier = 1;
     p.hitsLanded = 0;
     this.hitChainTimer = 0;
     p.headphoneWhipUsed = false;
     this.comboTintTimer = 0;
-    if (hadCombo && showNotice) {
-      this.addFloatingText('COMBO PERDIDO!', p.x, p.y, p.z + 48, '#f87171');
-      this.pushScreenNotification('Combo Breaker!', 'rose', p.x, p.y, p.z + 58);
-    }
+    this.comboEdgeFlashTimer = 0;
+    this.comboEdgeFlashStrength = 0;
   }
 
   private damagePlayer(rawDmg: number) {
     const p = this.player;
-    if (p.invulnTimer > 0) return;
+    if (p.invulnTimer > 0 || this.bossFinisherState) return;
 
     if (p.anim === 'bagGuard') {
       this.triggerBagCounterSpin(true);
@@ -2746,9 +3351,6 @@ export class BusBeatEmUpEngine {
       });
       if (p.shieldHits <= 0) {
         p.makeupShieldTimer = 0;
-        this.addFloatingText('ESCUDO QUEBROU!', p.x, p.y, p.z + 38, '#fb923c');
-      } else {
-        this.addFloatingText(`MOCHILA BLOQUEOU (${p.shieldHits})!`, p.x, p.y, p.z + 38, '#67e8f9');
       }
       this.pushHudSnapshot();
       return;
@@ -2759,17 +3361,19 @@ export class BusBeatEmUpEngine {
     p.hp = Math.max(0, p.hp - dmg);
     this.damageTakenThisLine = true;
     this.seatRestHoldTimer = 0;
-    this.resetComboStreak(true);
+    this.resetComboStreak();
     p.invulnTimer = 0.42;
     p.hitFlashTimer = 0.16;
-    p.anim = 'hurt';
-    p.animTimer = 0.22;
+    this.setPlayerAnim('hurt', 0.22);
     audio.playHurt();
     this.triggerShake(0.16, 4);
     this.spawnHitSparks(p.x, p.y, p.z + 20, -p.facing, { target: 'player' });
-    this.addFloatingText(`-${dmg}`, p.x, p.y, p.z + 36, '#ef4444');
 
     if (p.hp <= 0) {
+      if (!this.dailyRunCounted) {
+        this.dailyRunCounted = true;
+        this.trackDailyMission('complete_runs', 1);
+      }
       this.gameState = 'GAME_OVER';
       audio.playGameOver();
       vibrateGameOver();
@@ -2975,7 +3579,6 @@ export class BusBeatEmUpEngine {
       p.specialEnergy = Math.min(100, p.specialEnergy + 25);
       audio.playSoundWave();
       this.triggerShake(0.28, 4.5);
-      this.addFloatingText('+25 ESP', p.x, p.y, p.z + 42, '#38bdf8');
       for (const e of this.enemies) {
         if (e.hp > 0 && !e.isBoss && Math.abs(e.x - p.x) < 160) {
           e.aiState = 'hurt';
@@ -2992,8 +3595,14 @@ export class BusBeatEmUpEngine {
   private updateEnemies(dt: number) {
     const p = this.player;
 
+    const finisherActive = Boolean(this.bossFinisherState);
+
     for (let i = this.enemies.length - 1; i >= 0; i--) {
       const e = this.enemies[i];
+      if (e.aiState === 'finisherVictim') {
+        continue;
+      }
+
       if (e.aiState === 'knockdown') {
         e.stateTimer -= dt;
         e.walkPhase += dt * 4;
@@ -3041,9 +3650,26 @@ export class BusBeatEmUpEngine {
         continue;
       }
 
+      if (e.heavyHurtTimer && e.heavyHurtTimer > 0) {
+        e.heavyHurtTimer = Math.max(0, e.heavyHurtTimer - dt);
+      }
       if (e.hitFlashTimer > 0) e.hitFlashTimer = Math.max(0, e.hitFlashTimer - dt);
       if (e.speechTimer > 0) e.speechTimer = Math.max(0, e.speechTimer - dt);
       if (e.attackCooldown > 0) e.attackCooldown = Math.max(0, e.attackCooldown - dt);
+      if (finisherActive) {
+        e.attackCooldown = Math.max(e.attackCooldown, 1.0);
+        if (
+          e.aiState === 'windup' ||
+          e.aiState === 'spinWindup' ||
+          e.aiState === 'skateWindup' ||
+          e.aiState === 'attack' ||
+          e.aiState === 'spinAttack' ||
+          e.aiState === 'skateDash'
+        ) {
+          e.aiState = 'approach';
+          e.stateTimer = 0;
+        }
+      }
       if (e.guardBrokenTimer > 0) {
         e.guardBrokenTimer = Math.max(0, e.guardBrokenTimer - dt);
         if (e.guardBrokenTimer === 0 && e.guardMax > 0) {
@@ -3051,11 +3677,10 @@ export class BusBeatEmUpEngine {
           if (e.type === 'estudante') {
             e.hasFrontBarrier = true;
           }
-          this.addFloatingText('GUARDA RECUPERADA!', e.x, e.y, e.z + 40, '#38bdf8');
         }
       }
 
-      if (e.type === 'industria' && e.stinkActive && e.aiState !== 'hurt') {
+      if (!finisherActive && e.type === 'industria' && e.stinkActive && e.aiState !== 'hurt') {
         const dist = Math.hypot(p.x - e.x, (p.y - e.y) * 1.5);
         if (dist <= 40 && p.z < 18) {
           e.stinkTickTimer -= dt;
@@ -3076,8 +3701,17 @@ export class BusBeatEmUpEngine {
         e.stateTimer -= dt;
         e.x += e.vx * dt;
         e.vx *= Math.pow(0.04, dt);
+        if (e.z > 0 || e.vz !== 0) {
+          e.z += e.vz * dt;
+          e.vz -= GRAVITY * dt;
+          if (e.z <= 0) {
+            e.z = 0;
+            e.vz = 0;
+          }
+        }
         if (e.stateTimer <= 0) {
           e.aiState = 'approach';
+          e.heavyHurtTimer = 0;
         }
       } else if (e.aiState === 'skateWindup') {
         e.stateTimer -= dt;
@@ -3095,7 +3729,6 @@ export class BusBeatEmUpEngine {
           e.spinTickTimer = 0.5;
           this.damagePlayer(10);
           p.vx = e.facing * 150;
-          this.addFloatingText('ATROPELADO!', p.x, p.y, p.z + 40, '#facc15');
         }
         if (e.stateTimer <= 0) {
           e.aiState = 'cooldown';
@@ -3114,9 +3747,12 @@ export class BusBeatEmUpEngine {
         e.stateTimer -= dt;
         const dirX = Math.sign(dx) || e.facing;
         const dirY = Math.sign(dy);
-        const spinSpeed = (e.type === 'boss_cobrador_blindado' ? 92 : 76) * diff.speedMult;
+        const activeArmorLevel = e.guardBrokenTimer > 0 ? 0 : Math.max(0, e.guardHp);
+        const armorSpeedMult = Math.max(0.42, 1 - activeArmorLevel * 0.09);
+        const spinSpeed =
+          (e.type === 'boss_cobrador_blindado' ? 88 : 76) * diff.speedMult * armorSpeedMult;
         e.x += dirX * spinSpeed * dt;
-        e.y += dirY * 45 * diff.speedMult * dt;
+        e.y += dirY * 45 * diff.speedMult * armorSpeedMult * dt;
 
         if (absDx < 32 && absDy < 20 && p.z < 20) {
           e.spinTickTimer -= dt;
@@ -3150,9 +3786,19 @@ export class BusBeatEmUpEngine {
         if (e.stateTimer <= 0) {
           e.aiState = 'approach';
         }
+      } else if (finisherActive) {
+        e.facing = dx >= 0 ? 1 : -1;
+        e.walkPhase += dt * 0.4;
+        if (absDx < 58) {
+          e.x -= Math.sign(dx || 1) * 32 * dt;
+        }
       } else {
         e.facing = dx >= 0 ? 1 : -1;
-        e.walkPhase += dt;
+
+        const activeArmorLevel = e.guardBrokenTimer > 0 ? 0 : Math.max(0, e.guardHp);
+        // Quanto maior o nível de blindagem (guardHp), menor a velocidade do inimigo
+        const armorSpeedMult = Math.max(0.42, 1 - activeArmorLevel * 0.09);
+        e.walkPhase += dt * (0.62 + 0.38 * armorSpeedMult);
 
         const baseSpeed =
           e.type === 'patricinha'
@@ -3165,14 +3811,19 @@ export class BusBeatEmUpEngine {
                   ? 88
                   : e.type === 'boss_motorista'
                     ? 72
-                    : e.type === 'boss_cobrador_blindado'
-                      ? 54
-                      : e.type === 'industria' || e.type === 'tio_audio'
-                        ? 48
-                        : 58;
+                    : e.type === 'boss_cobrador_blindado' || e.type === 'boss_cobrador'
+                      ? 62
+                      : e.type === 'industria'
+                        ? 56
+                        : e.type === 'tio_audio'
+                          ? 48
+                          : 58;
         const windSlowMult = this.expressWindTimer > 0 && !e.isBoss ? 0.85 : 1;
         const speed =
-          baseSpeed * (e.isChaser ? Math.max(1, diff.speedMult) : diff.speedMult) * windSlowMult;
+          baseSpeed *
+          (e.isChaser ? Math.max(1, diff.speedMult) : diff.speedMult) *
+          windSlowMult *
+          armorSpeedMult;
 
         if (e.type === 'vendedor' || e.type === 'tio_audio') {
           const idealDist = e.type === 'tio_audio' ? 96 : 82;
@@ -3361,7 +4012,6 @@ export class BusBeatEmUpEngine {
       this.damagePlayer(dmg);
       if (e.type === 'estudante') {
         p.vx = e.facing * 180;
-        this.addFloatingText('EMPURRÃO!', p.x, p.y, p.z + 40, '#60a5fa');
       }
     }
   }
@@ -3405,7 +4055,6 @@ export class BusBeatEmUpEngine {
             e.hitFlashTimer = 0.2;
             p.score += 150;
             this.registerHitChain(1);
-            this.addFloatingText('ODOR NEUTRALIZADO!', e.x, e.y, e.z + 40, '#67e8f9');
             this.spawnParticles(e.x, e.y, 20, '#38bdf8', 14);
           }
         }
@@ -3421,7 +4070,6 @@ export class BusBeatEmUpEngine {
             hitSet.add(e.id);
             if (e.type === 'industria' && e.stinkActive) {
               e.stinkActive = false;
-              this.addFloatingText('ODOR DISSIPADO!', e.x, e.y, e.z + 44, '#67e8f9');
             }
             e.hp -= pr.damage;
             e.hitFlashTimer = 0.16;
@@ -3432,6 +4080,11 @@ export class BusBeatEmUpEngine {
             p.score += pr.damage * 2;
             this.registerHitChain(1);
             vibrateHit(true);
+            if (e.type === 'boss_cobrador_blindado' || e.type === 'boss_cobrador') {
+              audio.playMetallicImpact(false);
+            } else {
+              audio.playPunchSnap();
+            }
             this.spawnHitSparks(e.x, e.y, e.z + 20, kbDir, {
               target: e.isBoss ? 'turnstile_boss' : 'passenger',
               bossType: e.type,
@@ -3445,7 +4098,7 @@ export class BusBeatEmUpEngine {
             }
           }
         }
-      } else if (!pr.fromPlayer) {
+      } else if (!pr.fromPlayer && !this.bossFinisherState) {
         if (
           Math.abs(pr.x - p.x) < pr.radius &&
           Math.abs(pr.y - p.y) < 16 &&
@@ -3528,52 +4181,39 @@ export class BusBeatEmUpEngine {
         p.caneCharges = 6;
         this.caneHintTimer = 4.5;
         audio.playPickup();
-        this.addFloatingText('BENGALA (6)', d.x, d.y, 28, '#fbbf24');
-        this.pushCombatLog('Bengala equipada (6 cargas)', 'gold', 3.8);
         break;
       case 'chocolate':
-        p.hp = Math.min(p.maxHp, p.hp + 30);
+        p.hp = Math.min(p.maxHp, p.hp + 15);
         audio.playHeal();
-        this.addFloatingText('+30 HP', d.x, d.y, 28, '#4ade80');
-        this.pushCombatLog('Chocolate (+30 HP)', 'emerald', 3.6);
         break;
       case 'creditos':
         p.credits += 2;
         audio.playPickup();
-        this.addFloatingText('+2 CRÉDITOS', d.x, d.y, 28, '#60a5fa');
-        this.pushCombatLog('+2 Créditos coletados', 'cyan', 3.6);
         break;
       case 'desodorante':
         p.deodorantCount = Math.min(4, p.deodorantCount + 1);
         audio.playPickup();
-        this.addFloatingText('+1 DESODORANTE', d.x, d.y, 28, '#22d3ee');
-        this.pushCombatLog('Desodorante coletado', 'cyan', 3.6);
         break;
       case 'maquiagem':
         p.makeupShieldTimer = 10 + this.shopLoadout.buffDurationBonus;
         p.shieldHits = 5;
         p.score += 250;
         audio.playMakeup();
-        this.addFloatingText('ESCUDO (5) +250', d.x, d.y, 28, '#38bdf8');
-        this.pushCombatLog('Escudo de mochila ativo!', 'cyan', 4.0);
         break;
       case 'cafezinho':
-        p.hp = Math.min(p.maxHp, p.hp + 20);
+        p.hp = Math.min(p.maxHp, p.hp + 10);
         p.specialEnergy = Math.min(100, p.specialEnergy + 40);
         p.speedBoostTimer = Math.max(p.speedBoostTimer, 5);
         audio.playHeal();
-        this.addFloatingText('CAFÉ! +20 HP +VEL', d.x, d.y, 28, '#fbbf24');
-        this.pushCombatLog('Cafezinho (+20 HP & Vel.)', 'gold', 3.8);
         break;
       case 'bilhete_dourado':
         p.credits += 4;
         p.score += 200;
         audio.playValidate();
-        this.addFloatingText('BILHETE DOURADO! +4 CRÉD', d.x, d.y, 28, '#facc15');
-        this.pushCombatLog('Bilhete Dourado (+4 créd.)', 'gold', 4.2);
         break;
     }
     this.spawnParticles(d.x, d.y, 12, '#fde047', 10);
+    this.trackDailyMission('collect_drops', 1);
     this.pushHudSnapshot();
   }
 
@@ -3637,8 +4277,7 @@ export class BusBeatEmUpEngine {
         this.unlockAchievement('all_validated');
       }
       this.player.score += 1000;
-      this.player.anim = 'victory';
-      this.player.animTimer = 0;
+      this.setPlayerAnim('victory', 0);
       this.player.vx = 0;
       this.player.vy = 0;
       this.player.vz = 0;
@@ -3646,6 +4285,10 @@ export class BusBeatEmUpEngine {
       this.spawnParticles(this.player.x, this.player.y, 26, '#facc15', 14);
       this.spawnParticles(this.player.x, this.player.y, 22, '#34d399', 10);
       this.spawnParticles(this.player.x, this.player.y, 24, '#38bdf8', 8);
+      if (!this.dailyRunCounted) {
+        this.dailyRunCounted = true;
+        this.trackDailyMission('complete_runs', 1);
+      }
       this.gameState = 'VICTORY_SCENE';
       audio.playVictory(this.line.lineNumber);
       this.pushHudSnapshot();
@@ -3730,24 +4373,15 @@ export class BusBeatEmUpEngine {
       alertMessage: this.alertMessage,
       badges: Array.from(this.runBadges),
       activeAchievementToast: this.activeAchievementToast,
-      screenNotifications: this.screenNotifications.map(({ id, text, tone, xPct, yPct }) => ({
-        id,
-        text,
-        tone,
-        xPct,
-        yPct,
-      })),
-      combatLog: this.combatLog.map(({ id, text, tone }) => ({
-        id,
-        text,
-        tone,
-      })),
+      screenNotifications: [],
+      combatLog: [],
       achievementStats: {
         unlockedCount: achievementProgress.unlockedIds.length,
         totalCount: ALLOWED_BADGE_IDS.length,
         totalDefeated: achievementProgress.totalDefeated,
       },
       skinStyle: this.shopLoadout.equippedSkin,
+      garageConfig: this.shopLoadout.garage,
       lineSummary:
         this.gameState === 'LINE_TRANSITION'
           ? {
@@ -3764,6 +4398,28 @@ export class BusBeatEmUpEngine {
   }
 
   private render() {
+    if (
+      this.gameState === 'TITLE_MENU' ||
+      this.gameState === 'INTRO_SCENE' ||
+      this.gameState === 'VICTORY_SCENE'
+    ) {
+      this.staticRenderedState = this.gameState;
+      return;
+    }
+
+    const isStaticState =
+      this.gameState === 'PAUSED' ||
+      this.gameState === 'GAME_OVER' ||
+      this.gameState === 'LINE_TRANSITION';
+    if (isStaticState) {
+      if (this.staticRenderedState === this.gameState) {
+        return;
+      }
+      this.staticRenderedState = this.gameState;
+    } else {
+      this.staticRenderedState = null;
+    }
+
     const ctx = this.ctx;
     ctx.save();
     ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
@@ -3773,11 +4429,6 @@ export class BusBeatEmUpEngine {
       const sx = (Math.random() - 0.5) * 2 * this.shakeMag;
       const sy = (Math.random() - 0.5) * 2 * this.shakeMag;
       ctx.translate(sx, sy);
-    }
-
-    if (this.gameState === 'INTRO_SCENE' || this.gameState === 'VICTORY_SCENE') {
-      ctx.restore();
-      return;
     }
 
     const activeFlicker =
@@ -3850,8 +4501,12 @@ export class BusBeatEmUpEngine {
     }
 
     for (const e of this.enemies) {
+      const sortY =
+        e.aiState === 'finisherVictim' && e.finisherKind === 'ground_pound'
+          ? this.player.y - 2
+          : e.y;
       drawables.push({
-        y: e.y,
+        y: sortY,
         draw: () => {
           const sx = e.x - this.camX;
           drawVectorEnemy(
@@ -3866,9 +4521,13 @@ export class BusBeatEmUpEngine {
             e.hasFrontBarrier,
             e.stinkActive,
             e.hitFlashTimer > 0,
-            this.simTime
+            this.simTime,
+            Boolean(e.heavyHurtTimer && e.heavyHurtTimer > 0),
+            e.finisherKind,
+            e.finisherProg ?? 0,
+            e.finisherPhaseAngle ?? 0
           );
-          if (!e.isBoss && (e.hp < e.maxHp || e.guardMax > 0)) {
+          if (!e.isBoss && e.aiState !== 'finisherVictim' && (e.hp < e.maxHp || e.guardMax > 0)) {
             const bw = 26;
             const bx = sx - bw / 2;
             const by = e.y - e.z - (e.guardMax > 0 ? 48 : 44);
@@ -3944,7 +4603,8 @@ export class BusBeatEmUpEngine {
 
     drawables.push({
       y: this.player.y,
-      draw: () =>
+      draw: () => {
+        this.drawPlayerSpecialElectricParticles(ctx, false);
         drawVectorPlayer(
           ctx,
           this.player.x - this.camX,
@@ -3959,8 +4619,12 @@ export class BusBeatEmUpEngine {
           this.player.strengthBuffTimer > 0,
           this.player.rageTimer > 0,
           this.simTime,
-          this.shopLoadout.equippedSkin
-        ),
+          this.shopLoadout.equippedSkin,
+          this.shopLoadout.garage,
+          this.player.animDuration
+        );
+        this.drawPlayerSpecialElectricParticles(ctx, true);
+      },
     });
 
     drawables.sort((a, b) => a.y - b.y);
@@ -4061,8 +4725,27 @@ export class BusBeatEmUpEngine {
       );
     }
 
-    // 6. Foreground bus handrails
-    drawVectorForegroundPoles(ctx, this.camX);
+    // 5c. Dynamic Special Illumination Overlay (spotlight + radial color glow on combat plane)
+    if (this.specialLightTimer > 0) {
+      const lp = this.specialLightTimer / Math.max(0.01, this.specialLightMax);
+      const intensity = Math.sin(lp * Math.PI);
+      const lx = this.player.x - this.camX;
+      const ly = this.player.y - this.player.z - 20;
+      const grad = ctx.createRadialGradient(lx, ly, 16, lx, ly, 168);
+      if (this.specialLightColor === '#38bdf8') {
+        grad.addColorStop(0, `rgba(186, 230, 253, ${(0.32 * intensity).toFixed(3)})`);
+        grad.addColorStop(0.38, `rgba(56, 189, 248, ${(0.2 * intensity).toFixed(3)})`);
+      } else {
+        grad.addColorStop(0, `rgba(254, 240, 138, ${(0.3 * intensity).toFixed(3)})`);
+        grad.addColorStop(0.38, `rgba(250, 204, 21, ${(0.18 * intensity).toFixed(3)})`);
+      }
+      grad.addColorStop(1, `rgba(2, 6, 23, ${(0.38 * intensity).toFixed(3)})`);
+      ctx.fillStyle = grad;
+      ctx.fillRect(-12, -12, INTERNAL_WIDTH + 24, INTERNAL_HEIGHT + 24);
+    }
+
+    // 6. Primeiro Plano (Foreground Plane): barras, bancos e detalhes próximos da câmera
+    drawVectorForegroundLayer(ctx, this.line, this.camX, this.simTime);
 
     // 7. Pre-turnstile validator, STOP button & exit door prompts in world space
     {
@@ -4079,8 +4762,8 @@ export class BusBeatEmUpEngine {
           ctx.fill();
           ctx.stroke();
           ctx.fillStyle = '#facc15';
-          ctx.font = 'bold 6px sans-serif';
-          ctx.fillText(`VALIDAR (${cost})`, vx - 23, 91 + bounce);
+          ctx.font = 'bold 7px sans-serif';
+          ctx.fillText(`VALIDAR (${cost})`, vx - 25, 91.5 + bounce);
         }
       }
 
@@ -4095,8 +4778,8 @@ export class BusBeatEmUpEngine {
           ctx.fill();
           ctx.stroke();
           ctx.fillStyle = '#fef08a';
-          ctx.font = 'bold 6px sans-serif';
-          ctx.fillText('STOP', sx - 9, 82.5 + bounce);
+          ctx.font = 'bold 7px sans-serif';
+          ctx.fillText('STOP', sx - 10, 83 + bounce);
         }
       }
 
@@ -4111,8 +4794,8 @@ export class BusBeatEmUpEngine {
           ctx.fill();
           ctx.stroke();
           ctx.fillStyle = '#ffffff';
-          ctx.font = 'bold 6px sans-serif';
-          ctx.fillText('SAÍDA ->', dxDoor - 15, 38.5 + bounce);
+          ctx.font = 'bold 7px sans-serif';
+          ctx.fillText('SAÍDA ->', dxDoor - 17, 39 + bounce);
         }
       }
     }
@@ -4208,6 +4891,69 @@ export class BusBeatEmUpEngine {
       ctx.fillRect(-12, -12, INTERNAL_WIDTH + 24, INTERNAL_HEIGHT + 24);
     }
 
+    // 10b-2. "Impacto de Combos" peripheral screen-edge flashes & spark particles above 10x
+    if (this.comboEdgeFlashTimer > 0 || this.comboEdgeParticles.length > 0) {
+      ctx.save();
+      if (this.comboEdgeFlashTimer > 0) {
+        const t = Math.max(0, Math.min(1, this.comboEdgeFlashTimer / this.comboEdgeFlashMax));
+        const reduced = this.isReducedMotionPreferred();
+        const pulse = reduced ? 0.55 : 0.78 + 0.22 * Math.sin((1 - t) * Math.PI * 3);
+        const alpha = Math.min(0.68, Math.pow(t, 0.72) * 0.46 * this.comboEdgeFlashStrength * pulse);
+
+        const topGrad = ctx.createLinearGradient(0, 0, 0, 34);
+        topGrad.addColorStop(0, `rgba(250, 204, 21, ${(alpha * 0.95).toFixed(3)})`);
+        topGrad.addColorStop(0.55, `rgba(251, 113, 133, ${(alpha * 0.4).toFixed(3)})`);
+        topGrad.addColorStop(1, 'rgba(250, 204, 21, 0)');
+        ctx.fillStyle = topGrad;
+        ctx.fillRect(0, 0, INTERNAL_WIDTH, 34);
+
+        const botGrad = ctx.createLinearGradient(0, INTERNAL_HEIGHT, 0, INTERNAL_HEIGHT - 34);
+        botGrad.addColorStop(0, `rgba(56, 189, 248, ${(alpha * 0.95).toFixed(3)})`);
+        botGrad.addColorStop(0.55, `rgba(249, 115, 22, ${(alpha * 0.4).toFixed(3)})`);
+        botGrad.addColorStop(1, 'rgba(56, 189, 248, 0)');
+        ctx.fillStyle = botGrad;
+        ctx.fillRect(0, INTERNAL_HEIGHT - 34, INTERNAL_WIDTH, 34);
+
+        const leftGrad = ctx.createLinearGradient(0, 0, 44, 0);
+        leftGrad.addColorStop(0, `rgba(56, 189, 248, ${(alpha * 0.9).toFixed(3)})`);
+        leftGrad.addColorStop(0.5, `rgba(250, 204, 21, ${(alpha * 0.38).toFixed(3)})`);
+        leftGrad.addColorStop(1, 'rgba(56, 189, 248, 0)');
+        ctx.fillStyle = leftGrad;
+        ctx.fillRect(0, 0, 44, INTERNAL_HEIGHT);
+
+        const rightGrad = ctx.createLinearGradient(INTERNAL_WIDTH, 0, INTERNAL_WIDTH - 44, 0);
+        rightGrad.addColorStop(0, `rgba(251, 113, 133, ${(alpha * 0.9).toFixed(3)})`);
+        rightGrad.addColorStop(0.5, `rgba(250, 204, 21, ${(alpha * 0.38).toFixed(3)})`);
+        rightGrad.addColorStop(1, 'rgba(251, 113, 133, 0)');
+        ctx.fillStyle = rightGrad;
+        ctx.fillRect(INTERNAL_WIDTH - 44, 0, 44, INTERNAL_HEIGHT);
+
+        ctx.strokeStyle = `rgba(254, 240, 138, ${Math.min(0.95, alpha * 1.35).toFixed(3)})`;
+        ctx.lineWidth = 2.2;
+        ctx.strokeRect(1.1, 1.1, INTERNAL_WIDTH - 2.2, INTERNAL_HEIGHT - 2.2);
+      }
+
+      if (this.comboEdgeParticles.length > 0) {
+        ctx.lineCap = 'round';
+        for (const cp of this.comboEdgeParticles) {
+          const pLife = Math.max(0, Math.min(1, cp.life / cp.maxLife));
+          ctx.globalAlpha = pLife * 0.95;
+          ctx.strokeStyle = cp.color;
+          ctx.lineWidth = Math.max(1, cp.size * 0.85);
+          ctx.beginPath();
+          ctx.moveTo(cp.prevX, cp.prevY);
+          ctx.lineTo(cp.x, cp.y);
+          ctx.stroke();
+
+          ctx.fillStyle = '#ffffff';
+          ctx.beginPath();
+          ctx.arc(cp.x, cp.y, Math.max(0.7, cp.size * 0.48 * pLife), 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+      ctx.restore();
+    }
+
     // 10c. Subtle Matrix bullet-time tint & concentric ripple during slow-mo boss flying kick
     if (this.bossBulletTimeTimer > 0) {
       const btAlpha = Math.min(1, this.bossBulletTimeTimer / 0.25) * 0.14;
@@ -4245,7 +4991,8 @@ export class BusBeatEmUpEngine {
         this.bossKoOverlay.primaryColor,
         this.bossKoOverlay.secondaryColor,
         this.bossKoOverlay.style,
-        this.shopLoadout.equippedSkin
+        this.shopLoadout.equippedSkin,
+        this.shopLoadout.garage
       );
     }
 

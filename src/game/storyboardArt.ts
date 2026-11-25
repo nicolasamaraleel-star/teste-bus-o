@@ -173,8 +173,8 @@ function drawPerspectiveBusBackdrop(
   ctx: CanvasRenderingContext2D,
   W: number,
   H: number,
-  skyTop = '#38bdf8',
-  skyBot = '#e0f2fe'
+  skyTop = '#0f172a',
+  skyBot = '#475569'
 ) {
   // Sky outside left & right windows
   const sky = ctx.createLinearGradient(0, 0, 0, H * 0.65);
@@ -527,8 +527,8 @@ export function drawBusStopTransitionFrame(
   const isLine3 = nextLineCode === '303';
   const sky = ctx.createLinearGradient(0, 0, 0, H * 0.65);
   if (isLine3) {
-    sky.addColorStop(0, '#0f172a');
-    sky.addColorStop(1, '#1e3a8a');
+    sky.addColorStop(0, '#0ea5e9');
+    sky.addColorStop(1, '#bae6fd');
   } else {
     sky.addColorStop(0, '#f97316');
     sky.addColorStop(1, '#fde047');
@@ -538,8 +538,8 @@ export function drawBusStopTransitionFrame(
 
   // Stylized urban skyline
   const buildings = isLine3
-    ? ['#1e293b', '#334155', '#0f172a']
-    : ['#7c2d12', '#475569', '#1e293b'];
+    ? ['#64748b', '#475569', '#3b82f6']
+    : ['#9a3412', '#b45309', '#475569'];
   for (let i = 0; i < 11; i++) {
     const bh = 80 + ((i * 43) % 90);
     roundRect(ctx, i * 92 - 10, H * 0.58 - bh, 82, bh + 15, 4, buildings[i % buildings.length], '#0f172a', 2.5);

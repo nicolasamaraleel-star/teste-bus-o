@@ -151,9 +151,96 @@ class RetroAudioSynth {
     src.start(now);
   }
 
+  private bandpassNoise(
+    duration: number,
+    gainVal = 0.12,
+    centerFreq = 1800,
+    q = 1.4,
+    delay = 0
+  ) {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+
+    const sampleRate = ctx.sampleRate;
+    const length = Math.max(1, Math.floor(sampleRate * duration));
+    const buffer = ctx.createBuffer(1, length, sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < length; i++) {
+      data[i] = Math.random() * 2 - 1;
+    }
+
+    const src = ctx.createBufferSource();
+    src.buffer = buffer;
+
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.frequency.value = centerFreq;
+    filter.Q.value = q;
+
+    const gain = ctx.createGain();
+    const now = ctx.currentTime + delay;
+    gain.gain.setValueAtTime(gainVal, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + duration);
+
+    src.connect(filter);
+    filter.connect(gain);
+    gain.connect(this.masterGain ?? ctx.destination);
+    src.start(now);
+  }
+
   public playPunch() {
     this.tone(240, 90, 0.08, 'square', 0.1);
     this.noise(0.05, 0.08, 900);
+  }
+
+  public playPunchSnap() {
+    // Crisp leather/flesh punch snap ("estalo de soco")
+    this.tone(215, 62, 0.068, 'triangle', 0.14);
+    this.bandpassNoise(0.042, 0.16, 1950, 1.5);
+  }
+
+  public playUppercutCrack() {
+    // Heavy uppercut finisher crack + rising whoosh
+    this.tone(165, 44, 0.14, 'sawtooth', 0.15);
+    this.bandpassNoise(0.07, 0.18, 1550, 1.2);
+    this.tone(280, 480, 0.08, 'triangle', 0.07, 0.02);
+  }
+
+  public playKickImpact(aerial = false) {
+    // Solid martial kick impact (plus golden harmonic snap for Crane / Special kick)
+    this.tone(aerial ? 250 : 210, 52, aerial ? 0.14 : 0.11, 'sawtooth', 0.15);
+    this.bandpassNoise(aerial ? 0.085 : 0.06, 0.17, aerial ? 2350 : 1650, 1.3);
+    if (aerial) {
+      this.tone(587.33, 880, 0.09, 'triangle', 0.08, 0.015);
+    }
+  }
+
+  public playMetallicImpact(heavy = false) {
+    // Unmistakable metallic clang for armor, turnstile boss, handrail, and guard breaks
+    const gainScale = heavy ? 1.25 : 1;
+    this.tone(175, 65, heavy ? 0.14 : 0.09, 'sawtooth', 0.11 * gainScale);
+    this.tone(940, 890, heavy ? 0.2 : 0.13, 'triangle', 0.11 * gainScale);
+    this.tone(1420, 1340, heavy ? 0.22 : 0.14, 'square', 0.065 * gainScale, 0.006);
+    this.tone(2180, 1960, heavy ? 0.18 : 0.11, 'sine', 0.07 * gainScale, 0.01);
+    this.bandpassNoise(0.055, 0.14 * gainScale, 3200, 2.2);
+  }
+
+  public playCaneCrack() {
+    // Crisp wooden cane impact snap
+    this.tone(560, 190, 0.09, 'triangle', 0.16);
+    this.bandpassNoise(0.05, 0.16, 2550, 2.0);
+  }
+
+  public playBagThump() {
+    // Heavy padded backpack impact thud
+    this.tone(145, 48, 0.12, 'triangle', 0.17);
+    this.bandpassNoise(0.07, 0.13, 850, 1.0);
+  }
+
+  public playWhipImpact() {
+    // Headphone cable whip snap
+    this.bandpassNoise(0.055, 0.18, 3100, 1.8);
+    this.tone(720, 240, 0.08, 'sawtooth', 0.11);
   }
 
   public playHeavyHit() {
@@ -270,6 +357,23 @@ class RetroAudioSynth {
     this.tone(523.25, 523.25, 0.1, 'square', 0.1, 0.22);
     this.tone(659.25, 659.25, 0.1, 'square', 0.1, 0.31);
     this.tone(783.99, 1046.5, 0.24, 'triangle', 0.13, 0.4);
+  }
+
+  public playGrappleGrab() {
+    this.tone(140, 82, 0.085, 'triangle', 0.15, 0);
+    this.bandpassNoise(0.05, 0.14, 1100, 1.4, 0.01);
+  }
+
+  public playGiantSwingWhoosh() {
+    this.tone(240, 480, 0.14, 'sine', 0.08, 0);
+    this.bandpassNoise(0.15, 0.13, 720, 1.1, 0.01);
+  }
+
+  public playFinisherSlam() {
+    this.tone(155, 36, 0.28, 'sawtooth', 0.18, 0);
+    this.tone(95, 32, 0.24, 'triangle', 0.17, 0.01);
+    this.noise(0.18, 0.17, 360, 0);
+    this.bandpassNoise(0.09, 0.14, 1600, 1.3, 0.02);
   }
 
   public playStopBell() {

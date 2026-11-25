@@ -33,7 +33,7 @@ export const DEFAULT_INTRO_FRAMES: IntroFrame[] = [
 ];
 
 export const STOP_FRAME_BY_LINE: Record<string, string> = {
-  '202': '/src/assets/images/stop_202_expresso_oz_1795314159239.jpg',
+  '202': '/src/assets/images/stop_202_largo_de_oz_1795603034821.jpg',
   '303': '/src/assets/images/stop_303_barro_fundo_1795314159563.jpg',
 };
 

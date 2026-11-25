@@ -1,5 +1,6 @@
 export type PlayerSkinStyle =
   | 'classic'
+  | 'custom'
   | 'menor_aprendiz'
   | 'estagiario_chefe'
   | 'estagiario_ninja'
@@ -8,7 +9,126 @@ export type PlayerSkinStyle =
   | 'night_brawler'
   | 'cyber_rush';
 
-export type ShopCategory = 'custom' | 'perk';
+export type ShopCategory = 'custom' | 'perk' | 'garage';
+
+export type GarageGender = 'male' | 'female';
+export type GarageHairStyle = 'pompadour' | 'spiky' | 'afro' | 'ponytail';
+export type GarageNeonKey = 'neon_green' | 'neon_pink' | 'neon_cyan' | 'neon_yellow';
+export type GarageSlot = 'hairColor' | 'shirtColor' | 'tieColor' | 'pantsColor' | 'backpackColor';
+
+export interface GarageConfig {
+  gender: GarageGender;
+  hairStyle: GarageHairStyle;
+  hairColor: string;
+  shirtColor: string;
+  tieColor: string;
+  pantsColor: string;
+  backpackColor: string;
+}
+
+export interface GarageSwatchDef {
+  key: string;
+  label: string;
+  main: string;
+  dark: string;
+  highlight: string;
+  isNeon?: boolean;
+  shopItemId?: string;
+}
+
+export const GARAGE_COLOR_DEFS: Record<string, GarageSwatchDef> = {
+  // Free classic colors
+  dark_navy: { key: 'dark_navy', label: 'Azul Noturno', main: '#0f1326', dark: '#020617', highlight: '#475569' },
+  chestnut: { key: 'chestnut', label: 'Castanho', main: '#78350f', dark: '#451a03', highlight: '#b45309' },
+  black: { key: 'black', label: 'Preto', main: '#1e293b', dark: '#090d16', highlight: '#475569' },
+  blonde: { key: 'blonde', label: 'Loiro', main: '#eab308', dark: '#a16207', highlight: '#fef08a' },
+  burgundy: { key: 'burgundy', label: 'Borgonha', main: '#881337', dark: '#4c0519', highlight: '#e11d48' },
+  white: { key: 'white', label: 'Branco', main: '#f1f5f9', dark: '#94a3b8', highlight: '#ffffff' },
+  sky_blue: { key: 'sky_blue', label: 'Azul Claro', main: '#bae6fd', dark: '#0284c7', highlight: '#f0f9ff' },
+  charcoal: { key: 'charcoal', label: 'Grafite', main: '#475569', dark: '#1e293b', highlight: '#94a3b8' },
+  cream: { key: 'cream', label: 'Creme', main: '#fef3c7', dark: '#d97706', highlight: '#fffbeb' },
+  crimson: { key: 'crimson', label: 'Vermelho', main: '#dc2626', dark: '#991b1b', highlight: '#f87171' },
+  royal_blue: { key: 'royal_blue', label: 'Azul Royal', main: '#1d4ed8', dark: '#0f172a', highlight: '#3b82f6' },
+  gold: { key: 'gold', label: 'Dourado', main: '#eab308', dark: '#a16207', highlight: '#fef08a' },
+  emerald: { key: 'emerald', label: 'Verde', main: '#16a34a', dark: '#14532d', highlight: '#4ade80' },
+  navy: { key: 'navy', label: 'Jeans Escuro', main: '#475569', dark: '#1e2b58', highlight: '#6076b8' },
+  khaki: { key: 'khaki', label: 'Cáqui', main: '#a16207', dark: '#713f12', highlight: '#ca8a04' },
+  olive: { key: 'olive', label: 'Verde Oliva', main: '#4d7c0f', dark: '#1a2e05', highlight: '#84cc16' },
+  orange: { key: 'orange', label: 'Laranja', main: '#ea580c', dark: '#9a3412', highlight: '#fb923c' },
+  // 4 Neon unlockable colors (1.000 Fichas each)
+  neon_green: {
+    key: 'neon_green',
+    label: 'Verde Tóxico',
+    main: '#22c55e',
+    dark: '#15803d',
+    highlight: '#86efac',
+    isNeon: true,
+    shopItemId: 'garage_neon_green',
+  },
+  neon_pink: {
+    key: 'neon_pink',
+    label: 'Rosa Choque',
+    main: '#ec4899',
+    dark: '#9d174d',
+    highlight: '#f9a8d4',
+    isNeon: true,
+    shopItemId: 'garage_neon_pink',
+  },
+  neon_cyan: {
+    key: 'neon_cyan',
+    label: 'Ciano Elétrico',
+    main: '#06b6d4',
+    dark: '#0e7490',
+    highlight: '#67e8f9',
+    isNeon: true,
+    shopItemId: 'garage_neon_cyan',
+  },
+  neon_yellow: {
+    key: 'neon_yellow',
+    label: 'Amarelo Volt',
+    main: '#facc15',
+    dark: '#a16207',
+    highlight: '#fef08a',
+    isNeon: true,
+    shopItemId: 'garage_neon_yellow',
+  },
+};
+
+export const GARAGE_NEON_KEYS: GarageNeonKey[] = [
+  'neon_green',
+  'neon_pink',
+  'neon_cyan',
+  'neon_yellow',
+];
+
+export const GARAGE_FREE_COLORS: Record<GarageSlot, string[]> = {
+  hairColor: ['dark_navy', 'chestnut', 'black', 'blonde', 'burgundy'],
+  shirtColor: ['white', 'sky_blue', 'charcoal', 'cream', 'black'],
+  tieColor: ['crimson', 'royal_blue', 'gold', 'emerald', 'black'],
+  pantsColor: ['navy', 'black', 'khaki', 'royal_blue', 'olive'],
+  backpackColor: ['royal_blue', 'crimson', 'black', 'olive', 'orange'],
+};
+
+export const GARAGE_HAIR_DEFS: Array<{
+  id: GarageHairStyle;
+  label: string;
+  shopItemId?: string;
+}> = [
+  { id: 'pompadour', label: 'Topete Clássico' },
+  { id: 'spiky', label: 'Espetado', shopItemId: 'garage_hair_spiky' },
+  { id: 'afro', label: 'Black Power', shopItemId: 'garage_hair_afro' },
+  { id: 'ponytail', label: 'Rabo de Cavalo', shopItemId: 'garage_hair_ponytail' },
+];
+
+export const DEFAULT_GARAGE_CONFIG: GarageConfig = {
+  gender: 'male',
+  hairStyle: 'pompadour',
+  hairColor: 'dark_navy',
+  shirtColor: 'white',
+  tieColor: 'crimson',
+  pantsColor: 'navy',
+  backpackColor: 'royal_blue',
+};
 
 export interface ShopItemDefinition {
   id: string;
@@ -18,6 +138,9 @@ export interface ShopItemDefinition {
   description: string;
   price: number;
   skinStyle?: PlayerSkinStyle;
+  unlockHairStyle?: GarageHairStyle;
+  unlockNeonColor?: GarageNeonKey;
+  unlockGender?: boolean;
   maxHpBonus?: number;
   startingCredits?: number;
   startingCane?: number;
@@ -35,6 +158,7 @@ export interface ShopState {
   coins: number;
   ownedIds: string[];
   equippedSkin: PlayerSkinStyle;
+  garage: GarageConfig;
 }
 
 export interface InfiniteRecord {
@@ -44,6 +168,7 @@ export interface InfiniteRecord {
 
 export interface ActiveShopLoadout {
   equippedSkin: PlayerSkinStyle;
+  garage: GarageConfig;
   maxHpBonus: number;
   startingCredits: number;
   startingCane: number;
@@ -220,29 +345,162 @@ export const SHOP_CATALOG: ShopItemDefinition[] = [
     price: 150,
     damageMultBonus: 0.15,
   },
+  // Garagem & Estilo unlocks (estéticos)
+  {
+    id: 'garage_hair_spiky',
+    category: 'garage',
+    name: 'Corte Espetado',
+    subtitle: 'Garagem · Novo Corte de Cabelo',
+    description: 'Libera o corte espetado estilo punk/moicano urbano para personalizar na Garagem.',
+    price: 1000,
+    unlockHairStyle: 'spiky',
+  },
+  {
+    id: 'garage_hair_afro',
+    category: 'garage',
+    name: 'Corte Black Power',
+    subtitle: 'Garagem · Novo Corte de Cabelo',
+    description: 'Libera o corte Black Power volumoso em 16-bit para usar na Garagem.',
+    price: 1000,
+    unlockHairStyle: 'afro',
+  },
+  {
+    id: 'garage_hair_ponytail',
+    category: 'garage',
+    name: 'Corte Rabo de Cavalo',
+    subtitle: 'Garagem · Novo Corte de Cabelo',
+    description: 'Libera o cabelo longo preso em rabo de cavalo dinâmico para a Garagem.',
+    price: 1000,
+    unlockHairStyle: 'ponytail',
+  },
+  {
+    id: 'garage_neon_green',
+    category: 'garage',
+    name: 'Neon Verde Tóxico',
+    subtitle: 'Garagem · Paleta Neon Vibrante',
+    description: 'Libera a cor neon Verde Tóxico para cabelo, camisa, gravata, calça e mochila.',
+    price: 1000,
+    unlockNeonColor: 'neon_green',
+  },
+  {
+    id: 'garage_neon_pink',
+    category: 'garage',
+    name: 'Neon Rosa Choque',
+    subtitle: 'Garagem · Paleta Neon Vibrante',
+    description: 'Libera a cor neon Rosa Choque para cabelo, camisa, gravata, calça e mochila.',
+    price: 1000,
+    unlockNeonColor: 'neon_pink',
+  },
+  {
+    id: 'garage_neon_cyan',
+    category: 'garage',
+    name: 'Neon Ciano Elétrico',
+    subtitle: 'Garagem · Paleta Neon Vibrante',
+    description: 'Libera a cor neon Ciano Elétrico para cabelo, camisa, gravata, calça e mochila.',
+    price: 1000,
+    unlockNeonColor: 'neon_cyan',
+  },
+  {
+    id: 'garage_neon_yellow',
+    category: 'garage',
+    name: 'Neon Amarelo Volt',
+    subtitle: 'Garagem · Paleta Neon Vibrante',
+    description: 'Libera a cor neon Amarelo Volt para cabelo, camisa, gravata, calça e mochila.',
+    price: 1000,
+    unlockNeonColor: 'neon_yellow',
+  },
+  {
+    id: 'garage_gender_switch',
+    category: 'garage',
+    name: 'Troca de Gênero (Estagiária)',
+    subtitle: 'Garagem · Personagem Feminina',
+    description: 'Desbloqueia a opção de alternar entre Estagiário e Estagiária na Garagem, HUD e cutscenes.',
+    price: 3000,
+    unlockGender: true,
+  },
 ];
+
+export function isGarageHairUnlocked(ownedIds: string[], style: GarageHairStyle): boolean {
+  if (style === 'pompadour') return true;
+  const def = GARAGE_HAIR_DEFS.find((h) => h.id === style);
+  return def?.shopItemId ? ownedIds.includes(def.shopItemId) : false;
+}
+
+export function isGarageColorUnlocked(ownedIds: string[], colorKey: string): boolean {
+  const def = GARAGE_COLOR_DEFS[colorKey];
+  if (!def) return false;
+  if (!def.shopItemId) return true;
+  return ownedIds.includes(def.shopItemId);
+}
+
+export function isGarageGenderUnlocked(ownedIds: string[], gender: GarageGender): boolean {
+  if (gender === 'male') return true;
+  return ownedIds.includes('garage_gender_switch');
+}
+
+export function getGarageSwatchDef(key: string, fallbackKey = 'white'): GarageSwatchDef {
+  return GARAGE_COLOR_DEFS[key] ?? GARAGE_COLOR_DEFS[fallbackKey] ?? GARAGE_COLOR_DEFS.white;
+}
+
+export function sanitizeGarageConfig(
+  config: Partial<GarageConfig> | undefined,
+  ownedIds: string[]
+): GarageConfig {
+  const gender: GarageGender =
+    config?.gender === 'female' && isGarageGenderUnlocked(ownedIds, 'female') ? 'female' : 'male';
+  const rawHair = config?.hairStyle;
+  const hairStyle: GarageHairStyle =
+    (rawHair === 'pompadour' || rawHair === 'spiky' || rawHair === 'afro' || rawHair === 'ponytail') &&
+    isGarageHairUnlocked(ownedIds, rawHair)
+      ? rawHair
+      : DEFAULT_GARAGE_CONFIG.hairStyle;
+
+  const pickColor = (key: string | undefined, slot: GarageSlot, defVal: string) => {
+    if (!key) return defVal;
+    const allowed = new Set([...GARAGE_FREE_COLORS[slot], ...GARAGE_NEON_KEYS]);
+    if (allowed.has(key) && isGarageColorUnlocked(ownedIds, key)) {
+      return key;
+    }
+    return defVal;
+  };
+
+  return {
+    gender,
+    hairStyle,
+    hairColor: pickColor(config?.hairColor, 'hairColor', DEFAULT_GARAGE_CONFIG.hairColor),
+    shirtColor: pickColor(config?.shirtColor, 'shirtColor', DEFAULT_GARAGE_CONFIG.shirtColor),
+    tieColor: pickColor(config?.tieColor, 'tieColor', DEFAULT_GARAGE_CONFIG.tieColor),
+    pantsColor: pickColor(config?.pantsColor, 'pantsColor', DEFAULT_GARAGE_CONFIG.pantsColor),
+    backpackColor: pickColor(config?.backpackColor, 'backpackColor', DEFAULT_GARAGE_CONFIG.backpackColor),
+  };
+}
 
 const DEFAULT_STATE: ShopState = {
   coins: INITIAL_WELCOME_COINS,
   ownedIds: ['skin_classic'],
   equippedSkin: 'classic',
+  garage: { ...DEFAULT_GARAGE_CONFIG },
 };
 
 export function loadShopState(): ShopState {
-  if (typeof window === 'undefined') return { ...DEFAULT_STATE };
+  if (typeof window === 'undefined') {
+    return { ...DEFAULT_STATE, garage: { ...DEFAULT_GARAGE_CONFIG } };
+  }
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (!raw) {
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(DEFAULT_STATE));
-      return { ...DEFAULT_STATE };
+      return { ...DEFAULT_STATE, garage: { ...DEFAULT_GARAGE_CONFIG } };
     }
     const parsed = JSON.parse(raw) as Partial<ShopState>;
-    const owned = Array.isArray(parsed.ownedIds) ? parsed.ownedIds : ['skin_classic'];
+    const owned = Array.isArray(parsed.ownedIds) ? [...parsed.ownedIds] : ['skin_classic'];
     if (!owned.includes('skin_classic')) owned.push('skin_classic');
+    const uniqueOwned = Array.from(new Set(owned));
     return {
       coins: typeof parsed.coins === 'number' && parsed.coins >= 0 ? Math.floor(parsed.coins) : INITIAL_WELCOME_COINS,
-      ownedIds: Array.from(new Set(owned)),
+      ownedIds: uniqueOwned,
       equippedSkin:
+        parsed.equippedSkin === 'custom' ||
         parsed.equippedSkin === 'menor_aprendiz' ||
         parsed.equippedSkin === 'estagiario_chefe' ||
         parsed.equippedSkin === 'estagiario_ninja' ||
@@ -252,9 +510,10 @@ export function loadShopState(): ShopState {
         parsed.equippedSkin === 'cyber_rush'
           ? parsed.equippedSkin
           : 'classic',
+      garage: sanitizeGarageConfig(parsed.garage, uniqueOwned),
     };
   } catch {
-    return { ...DEFAULT_STATE };
+    return { ...DEFAULT_STATE, garage: { ...DEFAULT_GARAGE_CONFIG } };
   }
 }
 
@@ -371,17 +630,36 @@ export function purchaseShopItem(itemId: string): { ok: boolean; state: ShopStat
     coins: current.coins - item.price,
     ownedIds: [...current.ownedIds, item.id],
     equippedSkin: item.skinStyle ? item.skinStyle : current.equippedSkin,
+    garage: current.garage,
   };
   return { ok: true, state: saveShopState(next) };
 }
 
 export function equipShopSkin(skin: PlayerSkinStyle): ShopState {
   const current = loadShopState();
+  if (skin === 'custom') {
+    return saveShopState({ ...current, equippedSkin: 'custom' });
+  }
   const matchingItem = SHOP_CATALOG.find((i) => i.skinStyle === skin);
   if (!matchingItem || !current.ownedIds.includes(matchingItem.id)) {
     return current;
   }
   return saveShopState({ ...current, equippedSkin: skin });
+}
+
+export function equipGarageLook(): ShopState {
+  const current = loadShopState();
+  return saveShopState({ ...current, equippedSkin: 'custom' });
+}
+
+export function saveGarageConfig(config: GarageConfig, equipCustom = true): ShopState {
+  const current = loadShopState();
+  const sanitized = sanitizeGarageConfig(config, current.ownedIds);
+  return saveShopState({
+    ...current,
+    garage: sanitized,
+    equippedSkin: equipCustom ? 'custom' : current.equippedSkin,
+  });
 }
 
 export function awardCoinsFromRun(
@@ -402,6 +680,19 @@ export function awardCoinsFromRun(
     coins: current.coins + earned,
   });
   return { earned, total: next.coins };
+}
+
+export function awardBonusCoins(amount: number): { added: number; total: number } {
+  const safeAmount = Math.max(0, Math.floor(amount));
+  const current = loadShopState();
+  if (safeAmount <= 0) {
+    return { added: 0, total: current.coins };
+  }
+  const next = saveShopState({
+    ...current,
+    coins: current.coins + safeAmount,
+  });
+  return { added: safeAmount, total: next.coins };
 }
 
 export function getActiveShopLoadout(): ActiveShopLoadout {
@@ -436,6 +727,7 @@ export function getActiveShopLoadout(): ActiveShopLoadout {
 
   return {
     equippedSkin: state.equippedSkin,
+    garage: state.garage,
     maxHpBonus,
     startingCredits,
     startingCane,

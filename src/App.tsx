@@ -7,6 +7,7 @@ import { RotateCw } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AchievementsModal } from './components/AchievementsModal';
 import { AchievementToast } from './components/AchievementToast';
+import { DailyMissionsModal } from './components/DailyMissionsModal';
 import { GameHUD } from './components/GameHUD';
 import { GameModals } from './components/GameModals';
 import { IntroStoryboard } from './components/IntroStoryboard';
@@ -22,6 +23,7 @@ import {
   loadAchievementProgress,
   syncAchievementsWithProfile,
 } from './game/badges';
+import { DailyMissionsState, loadDailyMissionsState } from './game/dailyMissions';
 import { ActionKey, BusBeatEmUpEngine } from './game/engine';
 import { DEFAULT_INTRO_FRAMES, VICTORY_STORY_FRAMES } from './game/introFrames';
 import { musicManager } from './game/music';
@@ -33,6 +35,7 @@ import {
   saveBestHitChain,
   saveCampaignBestScore,
   saveInfiniteRecord,
+  ShopCategory,
   ShopState,
 } from './game/shop';
 import { GameMode, HudSnapshot } from './game/types';
@@ -105,9 +108,14 @@ function GameShell() {
   const [sfxVolume, setSfxVolume] = useState(() => audio.getSfxVolume());
   const [showLeaderboard, setShowLeaderboard] = useState(false);
   const [showShop, setShowShop] = useState(false);
+  const [shopInitialTab, setShopInitialTab] = useState<ShopCategory>('custom');
+  const [showDailyMissions, setShowDailyMissions] = useState(false);
   const [showAchievements, setShowAchievements] = useState(false);
   const [showTutorial, setShowTutorial] = useState(false);
   const [shopState, setShopState] = useState<ShopState>(() => loadShopState());
+  const [dailyMissionsState, setDailyMissionsState] = useState<DailyMissionsState>(() =>
+    loadDailyMissionsState()
+  );
   const [achievementProgress, setAchievementProgress] = useState<AchievementProgressState>(() =>
     loadAchievementProgress()
   );
@@ -189,6 +197,7 @@ function GameShell() {
         hud.gameMode === 'infinite' ? hud.infiniteWave : 0
       );
       setShopState(loadShopState());
+      setDailyMissionsState(loadDailyMissionsState());
       if (hud.gameMode === 'infinite') {
         setInfiniteBest(saveInfiniteRecord(hud.score, hud.infiniteWave));
       } else {
@@ -254,6 +263,8 @@ function GameShell() {
 
   const handleReturnTitle = useCallback(() => {
     engineRef.current?.returnToTitle();
+    setShopState(loadShopState());
+    setDailyMissionsState(loadDailyMissionsState());
   }, []);
 
   const handleToggleMute = useCallback(() => {
@@ -302,7 +313,13 @@ function GameShell() {
             onOpenLeaderboard={() => setShowLeaderboard(true)}
             onOpenShop={() => {
               setShopState(loadShopState());
+              setShopInitialTab('custom');
               setShowShop(true);
+            }}
+            onOpenDailyMissions={() => {
+              setDailyMissionsState(loadDailyMissionsState());
+              setShopState(loadShopState());
+              setShowDailyMissions(true);
             }}
             onOpenAchievements={() => {
               setAchievementProgress(loadAchievementProgress());
@@ -311,12 +328,21 @@ function GameShell() {
             onOpenTutorial={() => setShowTutorial(true)}
             shopCoins={shopState.coins}
             equippedSkin={shopState.equippedSkin}
+            garageConfig={shopState.garage}
             achievementCount={achievementProgress.unlockedIds.length}
             achievementTotal={ALLOWED_BADGE_IDS.length}
+            dailyCompletedCount={dailyMissionsState.missions.filter((m) => m.completed).length}
+            dailyTotalCount={dailyMissionsState.missions.length}
             selectedMode={gameMode}
             onSelectMode={setGameMode}
             infiniteBest={infiniteBest}
-            modalOpen={showLeaderboard || showShop || showAchievements || showTutorial}
+            modalOpen={
+              showLeaderboard ||
+              showShop ||
+              showDailyMissions ||
+              showAchievements ||
+              showTutorial
+            }
           />
         </div>
       )}
@@ -390,9 +416,25 @@ function GameShell() {
         />
       )}
 
+      {showDailyMissions && (
+        <DailyMissionsModal
+          missionsState={dailyMissionsState}
+          onRefreshState={(next) => {
+            setDailyMissionsState(next);
+            setShopState(loadShopState());
+          }}
+          onClose={() => {
+            setDailyMissionsState(loadDailyMissionsState());
+            setShopState(loadShopState());
+            setShowDailyMissions(false);
+          }}
+        />
+      )}
+
       {showShop && (
         <ShopModal
           shopState={shopState}
+          initialTab={shopInitialTab}
           onUpdateShop={(next) => {
             setShopState(next);
             engineRef.current?.refreshShopLoadout();

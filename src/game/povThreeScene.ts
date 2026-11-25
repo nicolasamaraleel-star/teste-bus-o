@@ -345,8 +345,8 @@ export function mountPovCutscene(
   let updateSceneFn: (elapsed: number, dt: number) => void = () => {};
 
   if (options.mode === 'intro') {
-    scene.background = new THREE.Color(0x0ea5e9);
-    scene.fog = new THREE.FogExp2(0x7dd3fc, 0.018);
+    scene.background = new THREE.Color(0x1e293b);
+    scene.fog = new THREE.FogExp2(0x334155, 0.018);
 
     // Bus interior shell (riveted metallic blue aesthetic + silver walkway floor)
     const floorMat = new THREE.MeshStandardMaterial({ color: 0xcbd5e1, roughness: 0.45, metalness: 0.3 });
@@ -591,9 +591,9 @@ export function mountPovCutscene(
       camera.lookAt(_camCurrentLook);
     };
   } else if (options.mode === 'mid_bus_stop') {
-    const isNight = options.nextLineCode === '303';
-    scene.background = new THREE.Color(isNight ? 0x0f172a : 0xf97316);
-    scene.fog = new THREE.FogExp2(isNight ? 0x1e293b : 0xfdba74, 0.022);
+    const isMorning = options.nextLineCode === '303';
+    scene.background = new THREE.Color(isMorning ? 0x38bdf8 : 0xf97316);
+    scene.fog = new THREE.FogExp2(isMorning ? 0xbae6fd : 0xfdba74, 0.022);
 
     // Road + Sidewalk + Curb
     const road = new THREE.Mesh(
@@ -629,7 +629,7 @@ export function mountPovCutscene(
       const b = new THREE.Mesh(
         new THREE.BoxGeometry(3.4, bh, 3.2),
         new THREE.MeshStandardMaterial({
-          color: isNight ? 0x172554 : 0x475569,
+          color: isMorning ? 0x64748b : 0x475569,
           roughness: 0.85,
         })
       );

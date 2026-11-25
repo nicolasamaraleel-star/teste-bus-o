@@ -1,9 +1,9 @@
-import { Award, Coffee, Music, Shield, Sparkles, Volume2 } from 'lucide-react';
-import { useEffect, useRef } from 'react';
+import { Award, Coffee, Info, Music, Shield, Sparkles, Volume2 } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
 import { audio } from '../game/audio';
 import { BADGE_META } from '../game/badges';
 import { STOP_FRAME_BY_LINE, VICTORY_OFFICE_FRAME } from '../game/introFrames';
-import { PlayerSkinStyle } from '../game/shop';
+import { GarageConfig, PlayerSkinStyle } from '../game/shop';
 import { AchievementBadgeId, HudSnapshot } from '../game/types';
 import {
   drawGameOverCryingCanvas,
@@ -42,9 +42,11 @@ function RunBadgesSummary({ badges }: { badges: AchievementBadgeId[] }) {
 function PauseSleepingCanvas({
   lineNumber,
   skinStyle = 'classic',
+  garageConfig,
 }: {
   lineNumber: 1 | 2 | 3;
   skinStyle?: PlayerSkinStyle;
+  garageConfig?: GarageConfig;
 }) {
   const pauseCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
@@ -60,13 +62,13 @@ function PauseSleepingCanvas({
     const loop = (now: number) => {
       const t = (now - start) / 1000;
       ctx.clearRect(0, 0, canvas.width, canvas.height);
-      drawPauseSleepingCanvas(ctx, canvas.width, canvas.height, t, lineNumber, skinStyle);
+      drawPauseSleepingCanvas(ctx, canvas.width, canvas.height, t, lineNumber, skinStyle, garageConfig);
       rafId = requestAnimationFrame(loop);
     };
 
     rafId = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(rafId);
-  }, [lineNumber, skinStyle]);
+  }, [lineNumber, skinStyle, garageConfig]);
 
   return (
     <canvas
@@ -83,9 +85,11 @@ function PauseSleepingCanvas({
 function GameOverCryingCanvas({
   lineNumber,
   skinStyle = 'classic',
+  garageConfig,
 }: {
   lineNumber: 1 | 2 | 3;
   skinStyle?: PlayerSkinStyle;
+  garageConfig?: GarageConfig;
 }) {
   const cryingCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
@@ -101,13 +105,13 @@ function GameOverCryingCanvas({
     const loop = (now: number) => {
       const t = (now - start) / 1000;
       ctx.clearRect(0, 0, canvas.width, canvas.height);
-      drawGameOverCryingCanvas(ctx, canvas.width, canvas.height, t, lineNumber, skinStyle);
+      drawGameOverCryingCanvas(ctx, canvas.width, canvas.height, t, lineNumber, skinStyle, garageConfig);
       rafId = requestAnimationFrame(loop);
     };
 
     rafId = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(rafId);
-  }, [lineNumber, skinStyle]);
+  }, [lineNumber, skinStyle, garageConfig]);
 
   return (
     <canvas
@@ -125,10 +129,12 @@ function VictoryStandPodium({
   lineNumber,
   score,
   skinStyle = 'classic',
+  garageConfig,
 }: {
   lineNumber: 1 | 2 | 3;
   score: number;
   skinStyle?: PlayerSkinStyle;
+  garageConfig?: GarageConfig;
 }) {
   const standCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
@@ -211,7 +217,8 @@ function VictoryStandPodium({
         lineNumber >= 2,
         lineNumber === 3,
         t,
-        skinStyle
+        skinStyle,
+        garageConfig
       );
 
       rafId = requestAnimationFrame(drawStand);
@@ -219,13 +226,13 @@ function VictoryStandPodium({
 
     rafId = requestAnimationFrame(drawStand);
     return () => cancelAnimationFrame(rafId);
-  }, [lineNumber, skinStyle]);
+  }, [lineNumber, skinStyle, garageConfig]);
 
   const title =
     lineNumber === 3
       ? 'LENDA DO HORÁRIO DE PICO'
       : lineNumber === 2
-        ? 'HERÓI DO EXPRESSO'
+        ? 'HERÓI DO LARGO DE OZ'
         : 'VENCEDOR DA LINHA';
 
   return (
@@ -285,6 +292,8 @@ export function GameModals({
   onRestart,
   onReturnTitle,
 }: GameModalsProps) {
+  const [hoveredPerk, setHoveredPerk] = useState<'coffee' | 'deodorant' | 'shield' | null>(null);
+
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
       if (e.code === 'Enter' || e.code === 'Space') {
@@ -317,7 +326,11 @@ export function GameModals({
     <div className="absolute inset-0 z-30 flex items-center justify-center bg-[#090d16]/85 p-4">
       {hud.gameState === 'PAUSED' && (
         <div className="w-full max-w-md max-h-[92vh] overflow-y-auto rounded-2xl bg-[#0f172a] border-4 border-[#facc15] p-5 md:p-6 text-center space-y-3.5 shadow-[0_8px_0_#020617]">
-          <PauseSleepingCanvas lineNumber={hud.lineNumber} skinStyle={hud.skinStyle} />
+          <PauseSleepingCanvas
+            lineNumber={hud.lineNumber}
+            skinStyle={hud.skinStyle}
+            garageConfig={hud.garageConfig}
+          />
           <p className="text-sm text-slate-300">
             {hud.lineTitle} · Pontuação:{' '}
             <span className="font-mono-num text-white font-bold">{hud.score}</span>
@@ -439,7 +452,7 @@ export function GameModals({
 
             {hud.lineSummary.fiscalAlert ? (
               <p className="text-xs text-amber-300 text-left">
-                Sem bilhete! Fiscal atrás de você na próxima linha.
+                Sem bilhete! Corra do fiscal!
               </p>
             ) : (
               <p className="text-xs text-emerald-300 text-left">
@@ -475,19 +488,75 @@ export function GameModals({
                 const deoDisabled = deoBought || hud.credits < 2 || hud.deodorantCount >= 4;
                 const shieldDisabled = shieldBought || hud.credits < 2;
 
+                const defaultGuidedPerk: 'coffee' | 'deodorant' | 'shield' = !coffeeDisabled
+                  ? 'coffee'
+                  : !deoDisabled
+                    ? 'deodorant'
+                    : !shieldDisabled
+                      ? 'shield'
+                      : !coffeeBought
+                        ? 'coffee'
+                        : !deoBought
+                          ? 'deodorant'
+                          : 'shield';
+                const activePerk = hoveredPerk ?? defaultGuidedPerk;
+
+                const perkDetails: Record<
+                  'coffee' | 'deodorant' | 'shield',
+                  { title: string; tip: string; status?: string }
+                > = {
+                  coffee: {
+                    title: 'Cafezinho',
+                    tip: 'Recupera +30 HP na hora para enfrentar a próxima linha sem sufoco.',
+                    status: coffeeBought
+                      ? 'Já comprado nesta parada.'
+                      : hud.hp >= hud.maxHp
+                        ? 'HP já está no máximo.'
+                        : hud.credits < 1
+                          ? 'Precisa de 1 crédito.'
+                          : undefined,
+                  },
+                  deodorant: {
+                    title: 'Desodorante',
+                    tip: '+1 carga de spray (E): neutraliza a nuvem tóxica do Operário e atordoa rivais.',
+                    status: deoBought
+                      ? 'Já comprado nesta parada.'
+                      : hud.deodorantCount >= 4
+                        ? 'Bolso cheio (4/4 sprays).'
+                        : hud.credits < 2
+                          ? 'Precisa de 2 créditos.'
+                          : undefined,
+                  },
+                  shield: {
+                    title: 'Reforço Mochila',
+                    tip: 'Escudo de 15s que absorve até 5 golpes no embarque sem perder HP nem combo.',
+                    status: shieldBought
+                      ? 'Escudo já ativado!'
+                      : hud.credits < 2
+                        ? 'Precisa de 2 créditos.'
+                        : undefined,
+                  },
+                };
+
+                const activeDetail = perkDetails[activePerk];
+
                 return (
                   <>
                     <button
                       type="button"
                       disabled={coffeeDisabled}
                       onClick={() => onBuyPerk('coffee')}
+                      onMouseEnter={() => setHoveredPerk('coffee')}
+                      onFocus={() => setHoveredPerk('coffee')}
+                      onMouseLeave={() => setHoveredPerk(null)}
+                      onBlur={() => setHoveredPerk(null)}
                       className={`p-2 rounded-lg border text-left transition-colors ${
                         coffeeBought
                           ? 'bg-emerald-950/60 border-emerald-500/60 text-emerald-300'
                           : coffeeDisabled
                             ? 'bg-slate-800/60 border-slate-700 text-slate-500 cursor-not-allowed'
                             : 'bg-slate-800 hover:bg-slate-700 border-amber-400/70 text-white cursor-pointer'
-                      }`}
+                      } ${activePerk === 'coffee' ? 'ring-1 ring-[#facc15]/80' : ''}`}
                     >
                       <div className="flex items-center justify-between text-[11px] font-bold">
                         <span className="inline-flex items-center gap-1">
@@ -505,13 +574,17 @@ export function GameModals({
                       type="button"
                       disabled={deoDisabled}
                       onClick={() => onBuyPerk('deodorant')}
+                      onMouseEnter={() => setHoveredPerk('deodorant')}
+                      onFocus={() => setHoveredPerk('deodorant')}
+                      onMouseLeave={() => setHoveredPerk(null)}
+                      onBlur={() => setHoveredPerk(null)}
                       className={`p-2 rounded-lg border text-left transition-colors ${
                         deoBought
                           ? 'bg-emerald-950/60 border-emerald-500/60 text-emerald-300'
                           : deoDisabled
                             ? 'bg-slate-800/60 border-slate-700 text-slate-500 cursor-not-allowed'
                             : 'bg-slate-800 hover:bg-slate-700 border-cyan-400/70 text-white cursor-pointer'
-                      }`}
+                      } ${activePerk === 'deodorant' ? 'ring-1 ring-cyan-300/80' : ''}`}
                     >
                       <div className="flex items-center justify-between text-[11px] font-bold">
                         <span className="inline-flex items-center gap-1">
@@ -529,13 +602,17 @@ export function GameModals({
                       type="button"
                       disabled={shieldDisabled}
                       onClick={() => onBuyPerk('shield')}
+                      onMouseEnter={() => setHoveredPerk('shield')}
+                      onFocus={() => setHoveredPerk('shield')}
+                      onMouseLeave={() => setHoveredPerk(null)}
+                      onBlur={() => setHoveredPerk(null)}
                       className={`p-2 rounded-lg border text-left transition-colors ${
                         shieldBought
                           ? 'bg-emerald-950/60 border-emerald-500/60 text-emerald-300'
                           : shieldDisabled
                             ? 'bg-slate-800/60 border-slate-700 text-slate-500 cursor-not-allowed'
                             : 'bg-slate-800 hover:bg-slate-700 border-sky-400/70 text-white cursor-pointer'
-                      }`}
+                      } ${activePerk === 'shield' ? 'ring-1 ring-sky-300/80' : ''}`}
                     >
                       <div className="flex items-center justify-between text-[11px] font-bold">
                         <span className="inline-flex items-center gap-1">
@@ -548,6 +625,20 @@ export function GameModals({
                         {shieldBought ? 'Ativado!' : 'Escudo 5 golpes (15s)'}
                       </p>
                     </button>
+
+                    <div
+                      role="status"
+                      className="sm:col-span-3 px-2.5 py-2 rounded-lg bg-[#090d16]/90 border border-slate-800 flex items-start gap-2 text-[11px] leading-snug text-slate-200"
+                    >
+                      <Info className="w-3.5 h-3.5 text-[#38bdf8] shrink-0 mt-0.5" />
+                      <div className="min-w-0">
+                        <span className="font-bold text-[#facc15]">{activeDetail.title}:</span>{' '}
+                        <span>{activeDetail.tip}</span>
+                        {activeDetail.status && (
+                          <span className="text-slate-400"> · {activeDetail.status}</span>
+                        )}
+                      </div>
+                    </div>
                   </>
                 );
               })()}
@@ -584,6 +675,7 @@ export function GameModals({
               lineNumber={hud.lineNumber}
               score={hud.score}
               skinStyle={hud.skinStyle}
+              garageConfig={hud.garageConfig}
             />
           </div>
 
@@ -640,7 +732,11 @@ export function GameModals({
             VOCÊ FOI DEMITIDO!
           </h2>
 
-          <GameOverCryingCanvas lineNumber={hud.lineNumber} skinStyle={hud.skinStyle} />
+          <GameOverCryingCanvas
+            lineNumber={hud.lineNumber}
+            skinStyle={hud.skinStyle}
+            garageConfig={hud.garageConfig}
+          />
 
           <p className="text-sm text-slate-300">
             {hud.gameMode === 'infinite'

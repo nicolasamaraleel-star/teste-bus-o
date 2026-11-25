@@ -1,8 +1,7 @@
-import { Award, BookOpen, Clock, Coins, Flame, ShoppingBag, Trophy } from 'lucide-react';
+import { Award, BookOpen, CalendarCheck, Clock, Coins, Flame, ShoppingBag, Trophy } from 'lucide-react';
 import { useEffect, useRef } from 'react';
 import { useFirebase } from '../contexts/FirebaseContext';
-import { RENDER_SCALE } from '../game/levels';
-import { InfiniteRecord, PlayerSkinStyle } from '../game/shop';
+import { GarageConfig, InfiniteRecord, PlayerSkinStyle } from '../game/shop';
 import { EnemyType, GameMode } from '../game/types';
 import {
   drawVectorEnemy,
@@ -15,11 +14,15 @@ interface TitleScreenProps {
   onOpenLeaderboard: () => void;
   onOpenShop: () => void;
   onOpenAchievements: () => void;
+  onOpenDailyMissions: () => void;
   onOpenTutorial: () => void;
   shopCoins: number;
   equippedSkin?: PlayerSkinStyle;
+  garageConfig?: GarageConfig;
   achievementCount: number;
   achievementTotal: number;
+  dailyCompletedCount: number;
+  dailyTotalCount: number;
   selectedMode: GameMode;
   onSelectMode: (mode: GameMode) => void;
   infiniteBest: InfiniteRecord;
@@ -48,6 +51,7 @@ interface PreviewEnemy {
   walkPhase: number;
   aiState: 'approach' | 'hurt' | 'knockdown';
   hitFlash: number;
+  koTimer: number;
 }
 
 interface PreviewSpark {
@@ -102,29 +106,45 @@ function drawHeaderFightArenaBackdrop(
     ctx.fillRect(Math.round(lx + 1), 13, 5, 3);
   }
 
-  // Window pillars & bus wall trim
-  ctx.fillStyle = '#1d4ed8';
+  // Window pillars, rounded rubber window frames & brushed bus wall trim
+  ctx.fillStyle = '#64748b';
   ctx.fillRect(0, 56, w, 24);
+  ctx.fillStyle = '#475569';
+  ctx.fillRect(0, 74, w, 6);
   ctx.fillStyle = '#090d16';
-  ctx.fillRect(0, 56, w, 2.5);
+  ctx.fillRect(0, 56, w, 2);
   ctx.fillRect(0, 78, w, 2.5);
 
-  for (let wx = 0; wx <= w; wx += 64) {
-    ctx.fillStyle = '#0f172a';
-    ctx.fillRect(wx - 2, 10, 4, 48);
-    ctx.fillStyle = '#334155';
-    ctx.fillRect(wx - 1, 12, 2, 44);
+  for (let wx = 0; wx < w; wx += 64) {
+    ctx.fillStyle = '#64748b';
+    ctx.fillRect(wx - 2.5, 10, 5, 48);
+    ctx.fillStyle = '#94a3b8';
+    ctx.fillRect(wx - 1, 12, 1.5, 44);
+    ctx.beginPath();
+    ctx.roundRect(wx + 3, 12, 58, 43, 6);
+    ctx.strokeStyle = '#090d16';
+    ctx.lineWidth = 2.6;
+    ctx.stroke();
+    ctx.strokeStyle = '#334155';
+    ctx.lineWidth = 1;
+    ctx.stroke();
   }
 
-  // Back-row bus seats silhouette
-  ctx.lineWidth = 1.2;
-  ctx.strokeStyle = '#090d16';
+  // Back-row moquette blue bus seats
   for (let sx = 14; sx < w - 14; sx += 46) {
-    ctx.fillStyle = '#1e3a8a';
-    ctx.fillRect(sx, 60, 24, 17);
-    ctx.strokeRect(sx, 60, 24, 17);
-    ctx.fillStyle = '#38bdf8';
-    ctx.fillRect(sx + 3, 62, 18, 2.5);
+    ctx.beginPath();
+    ctx.roundRect(sx, 60, 24, 17, 3.5);
+    ctx.fillStyle = '#2563eb';
+    ctx.fill();
+    ctx.strokeStyle = '#090d16';
+    ctx.lineWidth = 1.2;
+    ctx.stroke();
+    ctx.fillStyle = '#60a5fa';
+    ctx.fillRect(sx + 3, 61.5, 18, 2);
+    ctx.fillStyle = '#facc15';
+    ctx.fillRect(sx + 6, 67, 2, 1.5);
+    ctx.fillStyle = '#f472b6';
+    ctx.fillRect(sx + 15, 71, 2, 1.5);
   }
 
   // Overhead yellow handrail + swaying commuter straps
@@ -145,15 +165,20 @@ function drawHeaderFightArenaBackdrop(
     ctx.fillRect(Math.round(hx + sway - 2.5), 26, 5, 4);
   }
 
-  // Bus aisle floor
+  // Glossy bus aisle floor with window reflections
   ctx.fillStyle = floorGrad;
   ctx.fillRect(0, 80, w, h - 80);
+
+  for (let wx = 4; wx < w; wx += 64) {
+    ctx.fillStyle = 'rgba(147, 197, 253, 0.08)';
+    ctx.fillRect(wx, 80, 56, h - 80);
+  }
 
   ctx.fillStyle = '#eab308';
   ctx.fillRect(0, 80, w, 2.5);
 
   const floorScroll = (time * 72) % 34;
-  ctx.fillStyle = 'rgba(15, 23, 42, 0.42)';
+  ctx.fillStyle = 'rgba(15, 23, 42, 0.28)';
   for (let fx = -floorScroll; fx < w; fx += 34) {
     ctx.fillRect(Math.round(fx), 92, 14, 2);
     ctx.fillRect(Math.round(fx + 12), 118, 16, 2);
@@ -165,11 +190,15 @@ export function TitleScreen({
   onOpenLeaderboard,
   onOpenShop,
   onOpenAchievements,
+  onOpenDailyMissions,
   onOpenTutorial,
   shopCoins,
   equippedSkin = 'classic',
+  garageConfig,
   achievementCount,
   achievementTotal,
+  dailyCompletedCount,
+  dailyTotalCount,
   selectedMode,
   onSelectMode,
   infiniteBest,
@@ -277,10 +306,10 @@ export function TitleScreen({
   useEffect(() => {
     const canvas = fightCanvasRef.current;
     if (!canvas) return;
-    const W = 320;
-    const H = 128;
-    canvas.width = W * RENDER_SCALE;
-    canvas.height = H * RENDER_SCALE;
+    const W = 360;
+    const H = 144;
+    canvas.width = W;
+    canvas.height = H;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     ctx.imageSmoothingEnabled = false;
@@ -290,8 +319,8 @@ export function TitleScreen({
     skyGrad.addColorStop(1, '#172554');
 
     const floorGrad = ctx.createLinearGradient(0, 80, 0, H);
-    floorGrad.addColorStop(0, '#334155');
-    floorGrad.addColorStop(1, '#1e293b');
+    floorGrad.addColorStop(0, '#475776');
+    floorGrad.addColorStop(1, '#2d3a52');
 
     type SignatureMove = 'crane' | 'stunner' | 'rko' | 'trinity' | 'burly';
     const MOVE_SEQUENCE: SignatureMove[] = ['crane', 'stunner', 'rko', 'trinity', 'burly'];
@@ -313,30 +342,31 @@ export function TitleScreen({
       const type = pickRandomEnemy();
       const baseSpeed =
         type === 'skatista'
-          ? 88
+          ? 44
           : type === 'patricinha' || type === 'estudante'
-            ? 74
+            ? 36
             : type === 'idosa'
-              ? 62
-              : 70;
+              ? 30
+              : 34;
       return {
         type,
         x: startX,
-        y: yOverride ?? 108 + Math.floor(Math.random() * 10),
+        y: yOverride ?? 122 + Math.floor(Math.random() * 10),
         z: 0,
         vx: 0,
         vz: 0,
-        speed: baseSpeed + Math.random() * 10,
+        speed: baseSpeed + Math.random() * 5,
         walkPhase: Math.random() * 4,
         aiState: 'approach',
         hitFlash: 0,
+        koTimer: 0,
       };
     };
 
     const enemies: PreviewEnemy[] = [
-      spawnPreviewEnemy(138, 114),
-      spawnPreviewEnemy(212, 110),
-      spawnPreviewEnemy(286, 115),
+      spawnPreviewEnemy(150, 128),
+      spawnPreviewEnemy(225, 124),
+      spawnPreviewEnemy(300, 129),
     ];
     const sparks: PreviewSpark[] = [];
 
@@ -366,8 +396,9 @@ export function TitleScreen({
     let waitTimer = 0;
     let seqTime = 0;
     let seqStage = 0;
-    let playerX = 46;
-    const playerY = 114;
+    let targetEnemy: PreviewEnemy | null = null;
+    let playerX = 42;
+    const playerY = 128;
     let playerZ = 0;
     let playerAnim = 'fightStance';
     let impactFlashTimer = 0;
@@ -376,32 +407,36 @@ export function TitleScreen({
     let shockwaveTimer = 0;
     let shockwaveX = 78;
     let shockwaveColor = '#facc15';
-    let calloutText = '';
-    let calloutColor = '#fde047';
-    let calloutTimer = 0;
-    let cooldown = 0.08;
+    let cooldown = 0.18;
 
     let rafId = 0;
     let time = 0;
     let last = performance.now();
-    const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
 
     const finishSequence = () => {
       phase = 'wait';
       waitTimer = 0;
       seqTime = 0;
       seqStage = 0;
+      targetEnemy = null;
       playerAnim = 'fightStance';
       playerZ = 0;
-      cooldown = 0.08;
+      cooldown = 0.24;
+      for (const en of enemies) {
+        if (en.aiState === 'hurt') {
+          en.aiState = 'knockdown';
+          en.vx = 210;
+          en.vz = 130;
+          en.koTimer = 0;
+        }
+      }
       moveIndex = (moveIndex + 1) % MOVE_SEQUENCE.length;
       activeMove = MOVE_SEQUENCE[moveIndex];
 
-      // Pre-stage approaching enemies for Burly Brawl without waiting on knocked-out bodies
       if (activeMove === 'burly') {
         const approachingCount = enemies.filter((e) => e.aiState === 'approach').length;
-        for (let k = approachingCount; k < 3 && enemies.length < 6; k++) {
-          enemies.push(spawnPreviewEnemy(175 + k * 34, 108 + (k % 3) * 4));
+        for (let k = approachingCount; k < 3; k++) {
+          enemies.push(spawnPreviewEnemy(200 + k * 48, 122 + (k % 3) * 4));
         }
       }
     };
@@ -413,40 +448,36 @@ export function TitleScreen({
         return;
       }
 
-      const rawDt = Math.min((now - last) / 1000, 0.05);
-      const dt = reduceMotion ? rawDt * 0.25 : rawDt;
+      const dt = Math.min((now - last) / 1000, 0.05);
       last = now;
       time += dt;
 
       if (cooldown > 0) cooldown -= dt;
       if (impactFlashTimer > 0) impactFlashTimer -= dt;
       if (shockwaveTimer > 0) shockwaveTimer -= dt;
-      if (calloutTimer > 0) calloutTimer -= dt;
 
-      let leadIdx = enemies.findIndex((e) => e.aiState === 'approach');
-      if (leadIdx < 0) {
-        enemies.push(spawnPreviewEnemy(150, 112));
-        leadIdx = enemies.length - 1;
+      let lead = enemies.find((e) => e.aiState === 'approach');
+      if (!lead) {
+        lead = spawnPreviewEnemy(220, 126);
+        enemies.push(lead);
       }
-      const lead = enemies[leadIdx];
 
       if (phase === 'wait') {
         waitTimer += dt;
-        // Smoothly glide player back to left fighting stance spot
-        playerX += (46 - playerX) * Math.min(1, dt * 14);
-        playerZ += (0 - playerZ) * Math.min(1, dt * 14);
+        playerX += (42 - playerX) * Math.min(1, dt * 12);
+        playerZ += (0 - playerZ) * Math.min(1, dt * 12);
         playerAnim = 'fightStance';
 
         const triggerDist =
-          activeMove === 'rko' ? 116 : activeMove === 'trinity' ? 110 : 106;
+          activeMove === 'rko' ? 116 : activeMove === 'trinity' ? 110 : 104;
         const canTrigger =
           lead &&
           cooldown <= 0 &&
-          ((lead.x <= triggerDist && lead.x >= 56) || (waitTimer > 0.75 && lead.x < W - 8));
+          lead.x <= triggerDist;
 
         if (canTrigger && lead) {
-          if (lead.x > triggerDist) lead.x = triggerDist - 4;
-          if (lead.x < 68) lead.x = 76;
+          lead.x = Math.max(88, lead.x);
+          targetEnemy = lead;
           phase = 'seq';
           waitTimer = 0;
           seqTime = 0;
@@ -454,19 +485,14 @@ export function TitleScreen({
         }
       } else {
         seqTime += dt;
+        const activeTarget = targetEnemy ?? lead;
 
         if (activeMove === 'crane') {
-          // 1. CHUTE DA GARÇA (Karatê Kid)
           if (seqTime < 0.42) {
             playerAnim = 'cranePrep';
-            playerX = 46;
+            playerX = 42;
             playerZ = 0;
-            if (seqStage === 0) {
-              seqStage = 1;
-              calloutText = 'CHUTE DA GARÇA!';
-              calloutColor = '#fde047';
-              calloutTimer = 1.05;
-            }
+            if (seqStage === 0) seqStage = 1;
           } else if (seqTime < 0.8) {
             playerAnim = 'craneKick';
             const kProg = (seqTime - 0.42) / 0.38;
@@ -474,15 +500,15 @@ export function TitleScreen({
             playerZ = Math.sin(kProg * Math.PI) * 12;
             if (seqStage === 1) {
               seqStage = 2;
-              if (lead) {
-                lead.aiState = 'knockdown';
-                lead.vx = 220;
-                lead.vz = 148;
-                lead.z = 3;
-                lead.hitFlash = 0.18;
+              if (activeTarget) {
+                activeTarget.aiState = 'knockdown';
+                activeTarget.vx = 250;
+                activeTarget.vz = 148;
+                activeTarget.z = 3;
+                activeTarget.hitFlash = 0.18;
                 impactFlashTimer = 0.16;
-                impactX = lead.x - 4;
-                impactY = lead.y - 26;
+                impactX = activeTarget.x - 4;
+                impactY = activeTarget.y - 26;
                 spawnBurst(impactX, impactY, 10, '#fde047', '#f97316');
               }
             }
@@ -490,114 +516,98 @@ export function TitleScreen({
             finishSequence();
           }
         } else if (activeMove === 'stunner') {
-          // 2. STONE COLD STUNNER (WWE)
-          if (seqTime < 0.2) {
+          if (seqTime < 0.22) {
             playerAnim = 'kick';
             playerX = 52;
-            if (seqStage === 0 && lead) {
+            if (seqStage === 0 && activeTarget) {
               seqStage = 1;
-              lead.aiState = 'hurt';
-              lead.hitFlash = 0.14;
-              lead.x = Math.min(84, Math.max(70, lead.x));
-              calloutText = 'STONE COLD STUNNER!';
-              calloutColor = '#facc15';
-              calloutTimer = 1.15;
-              spawnBurst(lead.x - 4, lead.y - 16, 6, '#f8fafc', '#facc15');
+              activeTarget.aiState = 'hurt';
+              activeTarget.hitFlash = 0.14;
+              activeTarget.vx = -20;
+              spawnBurst(activeTarget.x - 4, activeTarget.y - 16, 6, '#f8fafc', '#facc15');
             }
-          } else if (seqTime < 0.68) {
+          } else if (seqTime < 0.7) {
             playerAnim = 'stunnerDrop';
-            playerX = 62;
-            playerZ = seqTime < 0.29 ? 7 * (1 - (seqTime - 0.2) / 0.09) : 0;
+            playerX = 60;
+            playerZ = seqTime < 0.31 ? 7 * (1 - (seqTime - 0.22) / 0.09) : 0;
             if (seqStage === 1) {
               seqStage = 2;
-              if (lead) {
-                lead.x = 76;
-                lead.z = 5;
-                lead.aiState = 'knockdown';
-                lead.vx = 200;
-                lead.vz = 170;
-                lead.hitFlash = 0.22;
+              if (activeTarget) {
+                activeTarget.x = Math.max(82, activeTarget.x);
+                activeTarget.z = 5;
+                activeTarget.aiState = 'knockdown';
+                activeTarget.vx = 240;
+                activeTarget.vz = 165;
+                activeTarget.hitFlash = 0.22;
               }
               impactFlashTimer = 0.18;
-              impactX = 72;
+              impactX = 74;
               impactY = playerY - 22;
               shockwaveTimer = 0.28;
               shockwaveX = 64;
               shockwaveColor = '#facc15';
-              spawnBurst(72, playerY - 12, 12, '#fde047', '#f8fafc');
+              spawnBurst(74, playerY - 12, 12, '#fde047', '#f8fafc');
             }
           } else {
             finishSequence();
           }
         } else if (activeMove === 'rko') {
-          // 3. RKO (WWE)
           if (seqTime < 0.34) {
             const leapProg = seqTime / 0.34;
             playerAnim = 'rkoCatch';
-            playerX = 46 + leapProg * 36;
-            playerZ = Math.sin(leapProg * Math.PI) * 23;
-            if (seqStage === 0) {
-              seqStage = 1;
-              calloutText = 'RKO OUTTA NOWHERE!';
-              calloutColor = '#fb7185';
-              calloutTimer = 1.15;
+            playerX = 44 + leapProg * 30;
+            playerZ = Math.sin(leapProg * Math.PI) * 22;
+            if (seqStage === 0) seqStage = 1;
+            if (activeTarget) {
+              activeTarget.x = Math.max(playerX + 18, activeTarget.x - 14 * dt);
+              activeTarget.z = playerZ * 0.55;
             }
-            if (lead) {
-              lead.x = Math.max(playerX + 12, lead.x - 18 * dt);
-              lead.z = playerZ * 0.55;
-            }
-          } else if (seqTime < 0.74) {
+          } else if (seqTime < 0.76) {
             playerAnim = 'rkoSlam';
-            playerX = 82;
+            playerX = 74;
             playerZ = 0;
             if (seqStage === 1) {
               seqStage = 2;
-              if (lead) {
-                lead.aiState = 'knockdown';
-                lead.vx = 185;
-                lead.vz = 165;
-                lead.z = 4;
-                lead.hitFlash = 0.22;
+              if (activeTarget) {
+                activeTarget.aiState = 'knockdown';
+                activeTarget.vx = 235;
+                activeTarget.vz = 160;
+                activeTarget.z = 4;
+                activeTarget.hitFlash = 0.22;
               }
               impactFlashTimer = 0.18;
-              impactX = 90;
+              impactX = 86;
               impactY = playerY - 12;
               shockwaveTimer = 0.3;
-              shockwaveX = 86;
+              shockwaveX = 82;
               shockwaveColor = '#fb7185';
-              spawnBurst(88, playerY - 10, 12, '#fb7185', '#fde047');
+              spawnBurst(86, playerY - 10, 12, '#fb7185', '#fde047');
             }
           } else {
             finishSequence();
           }
         } else if (activeMove === 'trinity') {
-          // 4. CHUTE VOADOR DE TRINITY (Matrix Bullet-Time Pause Kick)
           if (seqTime < 0.48) {
             playerAnim = 'trinityFreeze';
-            playerX = 52;
-            playerZ = 21;
-            if (seqStage === 0) {
-              seqStage = 1;
-              calloutText = 'VOADORA TRINITY!';
-              calloutColor = '#4ade80';
-              calloutTimer = 1.15;
-            }
+            playerX = 44;
+            playerZ = 20;
+            if (seqStage === 0) seqStage = 1;
           } else if (seqTime < 0.88) {
             const snapProg = Math.min(1, (seqTime - 0.48) / 0.16);
             playerAnim = 'trinityStrike';
-            playerX = 52 + snapProg * 30;
-            playerZ = 21 - ((seqTime - 0.48) / 0.4) * 14;
+            playerX = 44 + snapProg * 28;
+            playerZ = 20 - ((seqTime - 0.48) / 0.4) * 13;
             if (seqStage === 1 && snapProg >= 0.7) {
               seqStage = 2;
-              if (lead) {
-                lead.aiState = 'knockdown';
-                lead.vx = 240;
-                lead.vz = 132;
-                lead.z = 4;
-                lead.hitFlash = 0.2;
+              if (activeTarget) {
+                activeTarget.aiState = 'knockdown';
+                activeTarget.vx = 260;
+                activeTarget.vz = 138;
+                activeTarget.z = 4;
+                activeTarget.hitFlash = 0.2;
                 impactFlashTimer = 0.17;
-                impactX = lead.x - 4;
-                impactY = lead.y - 22;
+                impactX = activeTarget.x - 4;
+                impactY = activeTarget.y - 22;
                 spawnBurst(impactX, impactY, 12, '#22c55e', '#fef08a');
               }
             }
@@ -605,29 +615,22 @@ export function TitleScreen({
             finishSequence();
           }
         } else if (activeMove === 'burly') {
-          // 5. BURLY BRAWL (Matrix Neo Multi-Enemy Rush + Bullet Dodge + Flurry)
           if (seqTime < 0.36) {
             playerAnim = 'matrixDodge';
-            playerX = 46;
+            playerX = 42;
             playerZ = 0;
-            if (seqStage === 0) {
-              seqStage = 1;
-              calloutText = 'BURLY BRAWL!';
-              calloutColor = '#22c55e';
-              calloutTimer = 1.4;
-            }
+            if (seqStage === 0) seqStage = 1;
           } else if (seqTime < 0.88) {
             playerAnim = 'burlyFlurry';
-            playerX = 56 + Math.sin((seqTime - 0.36) * 26) * 6;
+            playerX = 50 + Math.sin((seqTime - 0.36) * 26) * 5;
             playerZ = 0;
-            // Rapidly hit & juggle approaching enemies
             if (Math.floor(seqTime * 16) > seqStage) {
               seqStage = Math.floor(seqTime * 16);
-              const closeTargets = enemies.filter((e) => e.aiState === 'approach' && e.x < 118);
+              const closeTargets = enemies.filter((e) => e.aiState === 'approach' && e.x < 155);
               if (closeTargets.length > 0) {
                 const t = closeTargets[seqStage % closeTargets.length];
                 t.hitFlash = 0.11;
-                t.x += 4;
+                t.x += 3;
                 impactFlashTimer = 0.08;
                 impactX = t.x - 6;
                 impactY = t.y - 22;
@@ -636,7 +639,7 @@ export function TitleScreen({
             }
           } else if (seqTime < 1.24) {
             playerAnim = 'kickFinisher';
-            playerX = 68;
+            playerX = 62;
             playerZ = 6;
             if (seqStage < 99) {
               seqStage = 99;
@@ -644,10 +647,10 @@ export function TitleScreen({
               shockwaveX = 72;
               shockwaveColor = '#22c55e';
               for (const en of enemies) {
-                if (en.aiState === 'approach' && en.x < 175) {
+                if (en.aiState === 'approach' && en.x < 195) {
                   en.aiState = 'knockdown';
-                  en.vx = 215 + Math.random() * 55;
-                  en.vz = 125 + Math.random() * 35;
+                  en.vx = 235 + Math.random() * 45;
+                  en.vz = 135 + Math.random() * 30;
                   en.z = 3;
                   en.hitFlash = 0.2;
                   spawnBurst(en.x - 4, en.y - 20, 7, '#22c55e', '#fde047');
@@ -660,26 +663,34 @@ export function TitleScreen({
         }
       }
 
-      // Enemy movement & physics (bullet-time slow during Trinity freeze!)
-      const bulletTimeFactor = phase === 'seq' && activeMove === 'trinity' && seqTime < 0.48 ? 0.2 : 1;
-      const rushFactor = phase === 'wait' && lead && lead.x > 116 ? 1.55 : 1;
+      // Enemy movement & physics: calm speed, clean spacing behind player/active target
+      const bulletTimeFactor = phase === 'seq' && activeMove === 'trinity' && seqTime < 0.48 ? 0.25 : 1;
+      const baseFloorX = phase === 'seq' ? 142 : 96;
+      let prevApproachX = baseFloorX - 48;
 
-      for (let i = enemies.length - 1; i >= 0; i--) {
+      for (let i = 0; i < enemies.length; i++) {
         const e = enemies[i];
         if (e.hitFlash > 0) e.hitFlash -= dt;
 
         if (e.aiState === 'approach') {
-          const stopFloor = phase === 'seq' && activeMove === 'burly' ? 68 + (i % 3) * 14 : 68;
-          if (e.x > stopFloor) {
-            e.x -= e.speed * dt * bulletTimeFactor * rushFactor;
-            e.walkPhase += dt * (e.speed / 28) * bulletTimeFactor * rushFactor;
+          const isLockedTarget = phase === 'seq' && e === targetEnemy;
+          if (!isLockedTarget) {
+            const minSlotX = Math.max(baseFloorX, prevApproachX + 48);
+            if (e.x > minSlotX) {
+              e.x = Math.max(minSlotX, e.x - e.speed * dt * bulletTimeFactor);
+              e.walkPhase += dt * (e.speed / 22) * bulletTimeFactor;
+            } else if (e.x < minSlotX) {
+              e.x = Math.min(minSlotX, e.x + 95 * dt);
+            }
+            prevApproachX = e.x;
           }
         } else if (e.aiState === 'hurt') {
           e.x += e.vx * dt;
           e.vx *= Math.pow(0.1, dt);
         } else {
+          e.koTimer += dt;
           e.x += e.vx * dt;
-          e.vx *= Math.pow(0.45, dt);
+          e.vx *= Math.pow(0.76, dt);
           e.z += e.vz * dt;
           e.vz -= 480 * dt;
           if (e.z <= 0) {
@@ -687,18 +698,21 @@ export function TitleScreen({
             e.vz = 0;
           }
         }
-
-        if (e.x > W + 32 || e.x < -40) {
+      }
+      for (let i = enemies.length - 1; i >= 0; i--) {
+        const en = enemies[i];
+        if (en.x > W + 32 || en.x < -40 || (en.aiState === 'knockdown' && en.koTimer > 0.85)) {
+          if (en === targetEnemy) targetEnemy = null;
           enemies.splice(i, 1);
         }
       }
 
-      // Keep a continuous queue of approaching enemies from the right edge (ignore flying KO bodies)
+      // Keep a clean queue of approaching enemies from the right edge
       const approaching = enemies.filter((e) => e.aiState === 'approach');
-      const desiredApproaching = activeMove === 'burly' ? 4 : 3;
+      const desiredApproaching = 3;
       const maxApproachX = approaching.reduce((m, e) => Math.max(m, e.x), 0);
-      if (approaching.length < desiredApproaching && maxApproachX < W - 36 && enemies.length < 6) {
-        enemies.push(spawnPreviewEnemy(W + 10 + Math.random() * 20));
+      if (approaching.length < desiredApproaching && maxApproachX < W - 44 && enemies.length < 7) {
+        enemies.push(spawnPreviewEnemy(W + 14 + Math.random() * 20));
       }
 
       for (let i = sparks.length - 1; i >= 0; i--) {
@@ -715,7 +729,6 @@ export function TitleScreen({
 
       ctx.save();
       ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.scale(RENDER_SCALE, RENDER_SCALE);
 
       drawHeaderFightArenaBackdrop(ctx, W, H, time, skyGrad, floorGrad);
 
@@ -747,13 +760,20 @@ export function TitleScreen({
               false,
               false,
               time,
-              equippedSkin
+              equippedSkin,
+              garageConfig
             );
           },
         },
         ...enemies.map((e) => ({
           y: e.y,
           render: () => {
+            const fadeAlpha =
+              e.aiState === 'knockdown' && e.koTimer > 0.55
+                ? Math.max(0, 1 - (e.koTimer - 0.55) / 0.3)
+                : 1;
+            ctx.save();
+            if (fadeAlpha < 1) ctx.globalAlpha = fadeAlpha;
             drawVectorEnemy(
               ctx,
               e.type,
@@ -764,10 +784,11 @@ export function TitleScreen({
               e.aiState,
               e.walkPhase,
               e.type === 'estudante',
-              e.type === 'industria',
+              false,
               e.hitFlash > 0,
               time
             );
+            ctx.restore();
           },
         })),
       ];
@@ -795,27 +816,18 @@ export function TitleScreen({
         ctx.fillRect(Math.round(sp.x), Math.round(sp.y), 2.5, 2.5);
       }
 
-      if (calloutTimer > 0 && calloutText) {
-        ctx.font = 'bold 8.5px "Bungee", "Chakra Petch", sans-serif';
-        ctx.textAlign = 'left';
-        ctx.textBaseline = 'bottom';
-        ctx.fillStyle = '#020617';
-        ctx.fillText(calloutText, 11, H - 4);
-        ctx.fillStyle = calloutColor;
-        ctx.fillText(calloutText, 10, H - 5);
-      }
-
       ctx.restore();
     };
 
     rafId = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(rafId);
-  }, [equippedSkin]);
+  }, [equippedSkin, garageConfig]);
 
   return (
     <div className="relative w-full h-full overflow-hidden bg-[#090d16]">
       <canvas
         ref={bgCanvasRef}
+        style={{ imageRendering: 'pixelated' }}
         className="absolute inset-0 w-full h-full object-cover"
       />
 
@@ -832,7 +844,6 @@ export function TitleScreen({
         {/* Top Bus Marquee Route Bar + Account & Fichas */}
         <div className="w-full max-w-4xl flex flex-wrap items-center justify-between gap-2 shrink-0">
           <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-[#0f172a]/90 border border-[#94a3b8]/70 shadow-[0_3px_0_#020617]">
-            <span className="inline-block w-2 h-2 rounded-full bg-[#ef4444]" />
             <span className="font-arcade-display text-[10px] md:text-xs tracking-wider text-[#facc15]">
               VIAÇÃO 10.527 · LINHAS 101 · 202 · 303
             </span>
@@ -843,11 +854,23 @@ export function TitleScreen({
               type="button"
               onClick={onOpenShop}
               title="Abrir Lojinha do Terminal"
-              className="px-4 py-1.5 rounded-full bg-[#facc15] bg-gradient-to-b from-[#fde047] to-[#eab308] hover:from-[#fef08a] hover:to-[#facc15] active:translate-y-0.5 border-2 border-[#020617] text-[#090d16] shadow-[0_4px_0_#020617] inline-flex items-center gap-2 cursor-pointer whitespace-nowrap shrink-0 transition-transform focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+              className="px-4 py-1.5 rounded-full bg-[#facc15] hover:bg-[#fde047] active:translate-y-0.5 border-2 border-[#020617] text-[#090d16] shadow-[0_4px_0_#020617] inline-flex items-center gap-2 cursor-pointer whitespace-nowrap shrink-0 transition-transform focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
             >
               <Coins className="w-4 h-4 text-[#78350f] shrink-0" />
               <span className="font-arcade-display text-xs md:text-sm tabular-nums tracking-wide">
                 {shopCoins} FICHAS
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={onOpenDailyMissions}
+              title="Ver missões diárias"
+              className="px-3.5 py-1.5 rounded-full bg-[#0f172a]/95 hover:bg-slate-800 border-2 border-[#38bdf8] text-slate-100 font-arcade-display text-[11px] shadow-[0_4px_0_#020617] inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
+            >
+              <CalendarCheck className="w-3.5 h-3.5 text-[#38bdf8] shrink-0" />
+              <span className="tabular-nums">
+                MISSÕES · {dailyCompletedCount}/{dailyTotalCount}
               </span>
             </button>
 
@@ -858,7 +881,7 @@ export function TitleScreen({
               className="px-3.5 py-1.5 rounded-full bg-[#0f172a]/95 hover:bg-slate-800 border-2 border-[#facc15]/80 text-slate-100 font-arcade-display text-[11px] shadow-[0_4px_0_#020617] inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
             >
               <Award className="w-3.5 h-3.5 text-[#facc15] shrink-0" />
-              <span>
+              <span className="tabular-nums">
                 CONQUISTAS · {achievementCount}/{achievementTotal}
               </span>
             </button>
@@ -877,18 +900,18 @@ export function TitleScreen({
         {/* Centered Menu Panel using the Bus Color Palette */}
         <div className="w-full max-w-xl my-auto rounded-2xl overflow-hidden border-4 border-[#0f172a] shadow-[0_10px_0_#020617] bg-[#1d4ed8] shrink-0">
           {/* Highlighted Upper Dark Bus Window Strip with Animated Fight Canvas */}
-          <div className="relative overflow-hidden bg-[#0f172a] px-4 pt-2.5 pb-16 sm:px-5 sm:pt-3 sm:pb-20 border-b-4 border-[#ef4444] flex flex-col items-center text-center">
+          <div className="relative overflow-hidden bg-[#090d16] aspect-[5/2] w-full px-4 pt-1.5 pb-2 sm:px-5 sm:pt-2.5 sm:pb-3 border-b-4 border-[#ef4444] flex flex-col items-center justify-start text-center">
             <canvas
               ref={fightCanvasRef}
               aria-label="Animação do estagiário em posição de luta no lado esquerdo enfrentando inimigos aleatórios vindos da direita"
               style={{ imageRendering: 'pixelated' }}
-              className="absolute inset-0 w-full h-full object-cover"
+              className="absolute inset-0 w-full h-full object-contain"
             />
             <div
               className="pointer-events-none absolute inset-0"
               style={{
                 background:
-                  'linear-gradient(180deg, rgba(9,13,22,0.78) 0%, rgba(9,13,22,0.28) 54%, rgba(9,13,22,0.38) 100%)',
+                  'linear-gradient(180deg, rgba(9,13,22,0.8) 0%, rgba(9,13,22,0.22) 48%, rgba(9,13,22,0.26) 100%)',
               }}
             />
 
@@ -1001,7 +1024,7 @@ export function TitleScreen({
               <button
                 type="button"
                 onClick={onStart}
-                className="px-7 py-2.5 sm:py-3 rounded-xl bg-[#facc15] bg-gradient-to-b from-[#fde047] to-[#eab308] hover:from-[#fef08a] hover:to-[#facc15] active:translate-y-0.5 text-[#090d16] font-arcade-display text-xs sm:text-sm md:text-base border-2 border-[#020617] shadow-[0_5px_0_#020617] transition-transform cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white whitespace-nowrap shrink-0"
+                className="px-7 py-2.5 sm:py-3 rounded-xl bg-[#facc15] hover:bg-[#fde047] active:translate-y-0.5 text-[#090d16] font-arcade-display text-xs sm:text-sm md:text-base border-2 border-[#020617] shadow-[0_5px_0_#020617] transition-transform cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white whitespace-nowrap shrink-0"
               >
                 EMBARCAR AGORA
               </button>
@@ -1012,13 +1035,13 @@ export function TitleScreen({
                 className="px-4 py-2.5 sm:py-3 rounded-xl bg-[#0f172a] hover:bg-slate-800 active:translate-y-0.5 text-[#facc15] font-arcade-display text-[11px] sm:text-xs md:text-sm border-2 border-[#facc15] shadow-[0_5px_0_#020617] transition-transform cursor-pointer inline-flex items-center gap-2 whitespace-nowrap shrink-0"
               >
                 <ShoppingBag className="w-4 h-4 shrink-0" />
-                <span>LOJINHA DO TERMINAL</span>
+                <span>LOJINHA</span>
               </button>
 
               <button
                 type="button"
                 onClick={onOpenTutorial}
-                className="px-4 py-2.5 sm:py-3 rounded-xl bg-[#0f172a] hover:bg-slate-800 active:translate-y-0.5 text-[#38bdf8] font-arcade-display text-[11px] sm:text-xs md:text-sm border-2 border-[#38bdf8] shadow-[0_5px_0_#020617] transition-transform cursor-pointer inline-flex items-center gap-2 whitespace-nowrap shrink-0"
+                className="px-4 py-2.5 sm:py-3 rounded-xl bg-[#0f172a] hover:bg-slate-800 active:translate-y-0.5 text-slate-200 font-arcade-display text-[11px] sm:text-xs md:text-sm border-2 border-slate-400 shadow-[0_5px_0_#020617] transition-transform cursor-pointer inline-flex items-center gap-2 whitespace-nowrap shrink-0"
               >
                 <BookOpen className="w-4 h-4 shrink-0" />
                 <span>TUTORIAL</span>

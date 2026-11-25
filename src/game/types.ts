@@ -1,4 +1,4 @@
-import { PlayerSkinStyle } from './shop';
+import { GarageConfig, PlayerSkinStyle } from './shop';
 
 export type GameMode = 'campaign' | 'infinite';
 
@@ -70,12 +70,19 @@ export type ItemType =
   | 'cafezinho'
   | 'bilhete_dourado';
 
+export type BossFinisherKind =
+  | 'piledriver'
+  | 'giant_swing'
+  | 'ground_pound'
+  | 'collar_knee';
+
 export type PlayerAnimState =
   | 'idle'
   | 'walk'
   | 'punch1'
   | 'punch2'
   | 'punch3'
+  | 'heavyPunch'
   | 'cane'
   | 'kick'
   | 'kickFinisher'
@@ -91,6 +98,10 @@ export type PlayerAnimState =
   | 'soundSpecial'
   | 'headphoneWhip'
   | 'spray'
+  | 'finisherPiledriver'
+  | 'finisherGiantSwing'
+  | 'finisherGroundPound'
+  | 'finisherCollarKnee'
   | 'hurt'
   | 'knockdown'
   | 'victory'
@@ -107,7 +118,8 @@ export type EnemyAIState =
   | 'skateDash'
   | 'cooldown'
   | 'hurt'
-  | 'knockdown';
+  | 'knockdown'
+  | 'finisherVictim';
 
 export interface PlayerEntity {
   x: number;
@@ -121,6 +133,7 @@ export interface PlayerEntity {
   maxHp: number;
   anim: PlayerAnimState;
   animTimer: number;
+  animDuration?: number;
   comboStep: 0 | 1 | 2;
   comboResetTimer: number;
   attackHasHit: boolean;
@@ -164,6 +177,8 @@ export interface EnemyEntity {
   stateTimer: number;
   attackCooldown: number;
   hitFlashTimer: number;
+  heavyHurtTimer?: number;
+  hurtDuration?: number;
   hasFrontBarrier: boolean;
   guardHp: number;
   guardMax: number;
@@ -179,6 +194,9 @@ export interface EnemyEntity {
   halfHpTauntTriggered?: boolean;
   walkPhase: number;
   guaranteedDrop?: ItemType;
+  finisherKind?: BossFinisherKind;
+  finisherProg?: number;
+  finisherPhaseAngle?: number;
 }
 
 export interface DropItem {
@@ -349,6 +367,7 @@ export interface HudSnapshot {
     totalDefeated: number;
   };
   skinStyle?: PlayerSkinStyle;
+  garageConfig?: GarageConfig;
   lineSummary?: {
     completedLine: 1 | 2 | 3;
     nextLine?: 2 | 3;

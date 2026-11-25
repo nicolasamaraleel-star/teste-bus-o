@@ -53,8 +53,8 @@ const FRAGMENT_SHADER_SRC = `
   }
 
   void main() {
-    // Snap UVs onto crisp 16-bit virtual pixel grid (480x270) so edges & limbs look genuinely pixelated
-    vec2 virtualRes = max(vec2(1.0), u_resolution / max(1.0, u_pixelScale));
+    // Snap sampling grid to virtual 16-bit resolution (e.g., 480x270 when RENDER_SCALE=2) for crisp pixel blocks
+    vec2 virtualRes = max(vec2(1.0), floor(u_resolution / max(1.0, u_pixelScale)));
     vec2 pixelCoord = floor(v_uv * virtualRes);
     vec2 snappedUv = (pixelCoord + 0.5) / virtualRes;
 
@@ -64,34 +64,26 @@ const FRAGMENT_SHADER_SRC = `
 
     float threshold = bayer4x4(pixelCoord);
 
-    // Detect soft/projected shadow transitions via local luminance gradient on the virtual pixel grid
+    // Subtle shadow-gradient Bayer dither without darkening crisp sprite edges or whites
     vec2 texel = 1.0 / virtualRes;
     float lL = luminance(texture2D(u_texture, snappedUv - vec2(texel.x, 0.0)).rgb);
     float lR = luminance(texture2D(u_texture, snappedUv + vec2(texel.x, 0.0)).rgb);
     float lU = luminance(texture2D(u_texture, snappedUv + vec2(0.0, texel.y)).rgb);
     float lD = luminance(texture2D(u_texture, snappedUv - vec2(0.0, texel.y)).rgb);
 
-    // Smooth transitions (modest gradient) vs crisp hard sprite outlines (huge delta)
     float grad = max(abs(lL - lR), abs(lU - lD));
-    float softEdgeMask = smoothstep(0.014, 0.075, grad) * (1.0 - smoothstep(0.16, 0.34, grad));
-
-    // Target shadow & mid-dark cabin transitions (v_uv.y: 0=bottom, 1=top)
-    float shadowBand = smoothstep(0.04, 0.16, luma) * (1.0 - smoothstep(0.32, 0.58, luma));
-
-    // Emphasize interior bus regions where ceiling lights & seat/floor shadows fall
+    float softEdgeMask = smoothstep(0.012, 0.06, grad) * (1.0 - smoothstep(0.14, 0.28, grad));
+    float shadowBand = smoothstep(0.04, 0.14, luma) * (1.0 - smoothstep(0.28, 0.50, luma));
     float interiorRegion = smoothstep(0.04, 0.12, v_uv.y) * (1.0 - smoothstep(0.92, 0.99, v_uv.y));
-    float flickerBoost = 1.0 + u_flicker * (0.28 + 0.18 * sin(u_time * 42.0));
+    float flickerBoost = 1.0 + u_flicker * (0.22 + 0.15 * sin(u_time * 42.0));
 
-    // Combine shadow transition mask & quantize color channels using 16-bit Bayer ordered dithering
-    float ditherStrength = clamp((shadowBand * 0.68 + softEdgeMask * 0.88) * interiorRegion * flickerBoost, 0.0, 1.0);
+    float ditherStrength = clamp((shadowBand * 0.35 + softEdgeMask * 0.55) * interiorRegion * flickerBoost, 0.0, 0.75);
 
-    // Authentic 16-bit RGB555 palette quantization everywhere + stronger Bayer stipple in shadow falloffs
-    float levels = mix(26.0, 10.0, ditherStrength);
-    vec3 dithered = floor(color * levels + (threshold - 0.5) * (0.95 * ditherStrength + 0.28)) / levels;
+    float levels = mix(56.0, 26.0, ditherStrength);
+    vec3 dithered = floor(color * levels + (threshold - 0.5) * (0.45 * ditherStrength + 0.12)) / levels;
 
-    // Punch crisp shadow stipple step along projected shadow falloff edges
-    float stippleDarken = (1.0 - step(threshold, shadowBand * 0.74 + softEdgeMask * 0.38)) * ditherStrength * 0.15;
-    vec3 finalColor = clamp(mix(color, dithered, max(0.38, ditherStrength * 0.92)) * (1.0 - stippleDarken), 0.0, 1.0);
+    float stippleDarken = (1.0 - step(threshold, shadowBand * 0.45 + softEdgeMask * 0.25)) * ditherStrength * 0.05;
+    vec3 finalColor = clamp(mix(color, dithered, max(0.18, ditherStrength * 0.55)) * (1.0 - stippleDarken), 0.0, 1.0);
 
     gl_FragColor = vec4(finalColor, 1.0);
   }
@@ -129,7 +121,13 @@ export class DitherPostProcessor {
 
   private fallbackCtx: CanvasRenderingContext2D | null = null;
   private fallbackDitherPattern: CanvasPattern | null = null;
+  private fallbackPixelCanvas: HTMLCanvasElement | null = null;
+  private fallbackPixelCtx: CanvasRenderingContext2D | null = null;
   private pixelScale: number;
+  private displayCanvas: HTMLCanvasElement;
+  private width: number;
+  private height: number;
+  private contextLost = false;
 
   constructor(
     displayCanvas: HTMLCanvasElement,
@@ -138,8 +136,11 @@ export class DitherPostProcessor {
     renderScale: number
   ) {
     this.pixelScale = renderScale;
+    this.displayCanvas = displayCanvas;
     const w = internalWidth * renderScale;
     const h = internalHeight * renderScale;
+    this.width = w;
+    this.height = h;
 
     displayCanvas.width = w;
     displayCanvas.height = h;
@@ -154,6 +155,9 @@ export class DitherPostProcessor {
     sctx.imageSmoothingEnabled = false;
     this.sceneCtx = sctx;
 
+    displayCanvas.addEventListener('webglcontextlost', this.handleContextLost, false);
+    displayCanvas.addEventListener('webglcontextrestored', this.handleContextRestored, false);
+
     if (!this.initWebGL(displayCanvas, w, h)) {
       const fctx = displayCanvas.getContext('2d');
       if (!fctx) {
@@ -162,8 +166,28 @@ export class DitherPostProcessor {
       fctx.imageSmoothingEnabled = false;
       this.fallbackCtx = fctx;
       this.fallbackDitherPattern = this.createFallbackPattern(fctx, renderScale);
+
+      const low = document.createElement('canvas');
+      low.width = internalWidth;
+      low.height = internalHeight;
+      const lctx = low.getContext('2d');
+      if (lctx) {
+        lctx.imageSmoothingEnabled = false;
+        this.fallbackPixelCanvas = low;
+        this.fallbackPixelCtx = lctx;
+      }
     }
   }
+
+  private handleContextLost = (e: Event) => {
+    e.preventDefault();
+    this.contextLost = true;
+  };
+
+  private handleContextRestored = () => {
+    this.contextLost = false;
+    this.initWebGL(this.displayCanvas, this.width, this.height);
+  };
 
   private initWebGL(canvas: HTMLCanvasElement, width: number, height: number): boolean {
     const opts: WebGLContextAttributes = {
@@ -218,6 +242,17 @@ export class DitherPostProcessor {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texImage2D(
+      gl.TEXTURE_2D,
+      0,
+      gl.RGBA,
+      width,
+      height,
+      0,
+      gl.RGBA,
+      gl.UNSIGNED_BYTE,
+      null
+    );
 
     gl.viewport(0, 0, width, height);
     gl.useProgram(prog);
@@ -261,15 +296,16 @@ export class DitherPostProcessor {
   }
 
   public present(time: number, flicker: number) {
-    if (this.gl && this.program && this.texture) {
+    if (this.gl && this.program && this.texture && !this.contextLost && !this.gl.isContextLost()) {
       const gl = this.gl;
       gl.useProgram(this.program);
       gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, this.texture);
-      gl.texImage2D(
+      gl.texSubImage2D(
         gl.TEXTURE_2D,
         0,
-        gl.RGBA,
+        0,
+        0,
         gl.RGBA,
         gl.UNSIGNED_BYTE,
         this.sceneCanvas
@@ -285,7 +321,31 @@ export class DitherPostProcessor {
     if (this.fallbackCtx) {
       const fctx = this.fallbackCtx;
       fctx.clearRect(0, 0, this.sceneCanvas.width, this.sceneCanvas.height);
-      fctx.drawImage(this.sceneCanvas, 0, 0);
+      if (this.fallbackPixelCanvas && this.fallbackPixelCtx) {
+        this.fallbackPixelCtx.clearRect(
+          0,
+          0,
+          this.fallbackPixelCanvas.width,
+          this.fallbackPixelCanvas.height
+        );
+        this.fallbackPixelCtx.drawImage(
+          this.sceneCanvas,
+          0,
+          0,
+          this.fallbackPixelCanvas.width,
+          this.fallbackPixelCanvas.height
+        );
+        fctx.imageSmoothingEnabled = false;
+        fctx.drawImage(
+          this.fallbackPixelCanvas,
+          0,
+          0,
+          this.sceneCanvas.width,
+          this.sceneCanvas.height
+        );
+      } else {
+        fctx.drawImage(this.sceneCanvas, 0, 0);
+      }
       if (this.fallbackDitherPattern) {
         fctx.save();
         fctx.fillStyle = this.fallbackDitherPattern;
@@ -296,6 +356,8 @@ export class DitherPostProcessor {
   }
 
   public destroy() {
+    this.displayCanvas.removeEventListener('webglcontextlost', this.handleContextLost);
+    this.displayCanvas.removeEventListener('webglcontextrestored', this.handleContextRestored);
     if (this.gl) {
       if (this.texture) this.gl.deleteTexture(this.texture);
       if (this.vbo) this.gl.deleteBuffer(this.vbo);
