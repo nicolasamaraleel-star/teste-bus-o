@@ -87,6 +87,7 @@ export type PlayerAnimState =
   | 'kick'
   | 'kickFinisher'
   | 'jump'
+  | 'jumpPunch'
   | 'jumpKick'
   | 'railGrab'
   | 'railSpin'

@@ -29,20 +29,20 @@ const contextBusShadowCache = new WeakMap<
 function getBusInteriorGradients(ctx: CanvasRenderingContext2D) {
   let cached = contextBusShadowCache.get(ctx);
   if (!cached) {
-    const seatCastShadow = ctx.createLinearGradient(0, 148, 0, 176);
-    seatCastShadow.addColorStop(0, 'rgba(5, 8, 18, 0.54)');
-    seatCastShadow.addColorStop(0.55, 'rgba(5, 8, 18, 0.24)');
+    const seatCastShadow = ctx.createLinearGradient(0, 148, 0, 178);
+    seatCastShadow.addColorStop(0, 'rgba(4, 7, 16, 0.68)');
+    seatCastShadow.addColorStop(0.55, 'rgba(5, 8, 18, 0.30)');
     seatCastShadow.addColorStop(1, 'rgba(5, 8, 18, 0)');
 
-    const fgCastShadow = ctx.createLinearGradient(0, 212, 0, 236);
+    const fgCastShadow = ctx.createLinearGradient(0, 210, 0, 236);
     fgCastShadow.addColorStop(0, 'rgba(5, 8, 18, 0)');
-    fgCastShadow.addColorStop(0.6, 'rgba(5, 8, 18, 0.28)');
-    fgCastShadow.addColorStop(1, 'rgba(5, 8, 18, 0.56)');
+    fgCastShadow.addColorStop(0.6, 'rgba(4, 7, 16, 0.34)');
+    fgCastShadow.addColorStop(1, 'rgba(4, 7, 16, 0.70)');
 
     const coneGrad = ctx.createLinearGradient(0, 13, 0, 146);
-    coneGrad.addColorStop(0, 'rgba(224, 242, 254, 1)');
-    coneGrad.addColorStop(0.55, 'rgba(186, 230, 253, 0.45)');
-    coneGrad.addColorStop(1, 'rgba(186, 230, 253, 0)');
+    coneGrad.addColorStop(0, 'rgba(103, 232, 249, 0.96)');
+    coneGrad.addColorStop(0.52, 'rgba(56, 189, 248, 0.42)');
+    coneGrad.addColorStop(1, 'rgba(56, 189, 248, 0)');
 
     cached = { seatCastShadow, fgCastShadow, coneGrad };
     contextBusShadowCache.set(ctx, cached);
@@ -706,13 +706,13 @@ export function drawVectorPlayer(
   // Crisp directional 16-bit cast shadow (grounding fighters cleanly on glossy floor)
   const shadowScale = Math.max(0.48, 1 - z / 115);
   ctx.save();
-  ctx.fillStyle = 'rgba(8, 12, 28, 0.56)';
+  ctx.fillStyle = 'rgba(6, 9, 22, 0.66)';
   ctx.beginPath();
-  ctx.ellipse(x - 2 * facing, y + 0.5, 16 * shadowScale, 3.6 * shadowScale, 0, 0, Math.PI * 2);
+  ctx.ellipse(x - 2 * facing, y + 0.5, 16 * shadowScale, 3.8 * shadowScale, 0, 0, Math.PI * 2);
   ctx.fill();
-  ctx.fillStyle = 'rgba(8, 12, 28, 0.34)';
+  ctx.fillStyle = 'rgba(6, 9, 22, 0.40)';
   ctx.beginPath();
-  ctx.ellipse(x - 5 * facing, y + 1.2, 21 * shadowScale, 2.5 * shadowScale, 0, 0, Math.PI * 2);
+  ctx.ellipse(x - 5 * facing, y + 1.2, 21 * shadowScale, 2.7 * shadowScale, 0, 0, Math.PI * 2);
   ctx.fill();
   ctx.restore();
 
@@ -786,8 +786,8 @@ export function drawVectorPlayer(
   ctx.translate(px(x), px(y - z));
   ctx.scale(facing, 1);
 
-  // Stepped 16-bit frame timing (4-frame walk, 2-frame idle breath)
-  const walkFrame = ((Math.floor(animTimer * 10) % 4) + 4) % 4;
+  // Stepped 16-bit frame timing (8-frame walk cycle preserving ~0.4s stride, 2-frame idle breath)
+  const walkFrame = ((Math.floor(animTimer * 20) % 8) + 8) % 8;
   const idleFrame = ((Math.floor(auraClock * 3.2) % 2) + 2) % 2;
 
   const hasExplicitDuration = typeof animDuration === 'number' && animDuration > 0;
@@ -814,9 +814,11 @@ export function drawVectorPlayer(
     bodyDy = idleFrame === 1 ? -1 : 0;
     leanAngle = -0.04;
   } else if (anim === 'walk') {
-    bodyDx = 1;
-    bodyDy = walkFrame % 2 === 1 ? -1 : 0;
-    leanAngle = 0.05;
+    const walkBobTable = [1, 1.8, 0.2, -1, 1, 1.8, 0.2, -1];
+    const walkLeanTable = [0.06, 0.075, 0.045, 0.05, 0.06, 0.075, 0.045, 0.05];
+    bodyDx = 0.8;
+    bodyDy = walkBobTable[walkFrame];
+    leanAngle = walkLeanTable[walkFrame];
   } else if (anim === 'punch1' || anim === 'punch2') {
     if (animProgress < 0.22) {
       const ant = animProgress / 0.22;
@@ -871,6 +873,22 @@ export function drawVectorPlayer(
       bodyDx = -2 * rec;
       bodyDy = -1 * rec;
       leanAngle = -0.17 * rec;
+    }
+  } else if (anim === 'jumpPunch') {
+    if (animProgress < 0.25) {
+      const ant = animProgress / 0.25;
+      bodyDx = -2 * ant;
+      bodyDy = -1.5;
+      leanAngle = -0.1 * ant;
+    } else if (animProgress < 0.72) {
+      bodyDx = 3.5;
+      bodyDy = -1.5;
+      leanAngle = 0.16;
+    } else {
+      const rec = Math.max(0, 1 - (animProgress - 0.72) / 0.28);
+      bodyDx = 3.5 * rec;
+      bodyDy = -1.5 * rec;
+      leanAngle = 0.16 * rec;
     }
   } else if (anim === 'jumpKick') {
     if (animProgress < 0.20) {
@@ -1404,6 +1422,16 @@ export function drawVectorPlayer(
       pxLimb(ctx, bodyDx + 6 + rec * 7, -9 + rec * (hipY + 7), fx, fy, 5.5, pal.pantsLowerFront, pal.pantsLowerFrontDark);
       drawShoe(fx + 1, fy, rec > 0.4);
     }
+  } else if (anim === 'jumpPunch') {
+    // Airborne brawler punch tuck with bent knees
+    const tuckShift = animProgress >= 0.25 && animProgress < 0.72 ? 1.5 : 0;
+    pxLimb(ctx, bodyDx - 2, hipY, -7 - tuckShift, hipY + 3, 5.8, pal.pantsUpperRear, pal.pantsUpperRearDark);
+    pxLimb(ctx, -7 - tuckShift, hipY + 3, -12 - tuckShift, hipY + 9, 5.4, pal.pantsLowerRear, pal.pantsLowerRearDark);
+    drawShoe(-12 - tuckShift, hipY + 9);
+
+    pxLimb(ctx, bodyDx + 2, hipY, 8 + tuckShift, hipY - 2, 5.9, pal.pantsUpperFront, pal.pantsUpperFrontDark);
+    pxLimb(ctx, 8 + tuckShift, hipY - 2, 5 + tuckShift, hipY + 7, 5.5, pal.pantsLowerFront, pal.pantsLowerFrontDark);
+    drawShoe(6 + tuckShift, hipY + 7);
   } else if (anim === 'jumpKick') {
     // Chute da Garça / Crane Kick (Karatê Kid)
     pxLimb(ctx, bodyDx - 2, hipY, -6, -7, 5.8, pal.pantsUpperRear, pal.pantsUpperRearDark);
@@ -1651,20 +1679,43 @@ export function drawVectorPlayer(
       drawShoe(11, -2);
     }
   } else if (anim === 'walk') {
-    const strideTable = [
-      { bx: -7, by: -2, fx: 8, fy: -2 },
-      { bx: -2, by: -2, fx: 2, fy: -4 },
-      { bx: 8, by: -2, fx: -7, fy: -2 },
-      { bx: 2, by: -4, fx: -2, fy: -2 },
+    // 8-pose biomechanical walk cycle: Contact -> Down (weight plant) -> Passing -> High Point (x2)
+    // Planted foot sweeps back underneath body to prevent sliding; swing foot lifts with knee flexion
+    const strideTable: Array<{
+      bkx: number;
+      bky: number;
+      bfx: number;
+      bfy: number;
+      fkx: number;
+      fky: number;
+      ffx: number;
+      ffy: number;
+    }> = [
+      // 0: Contact R (front heel plants forward, rear pushes off behind)
+      { bkx: -4.5, bky: -8, bfx: -9.5, bfy: -2, fkx: 6.0, fky: -8, ffx: 9.5, ffy: -2 },
+      // 1: Down R (weight settles onto front foot, rear lifts off floor)
+      { bkx: -6.0, bky: -9, bfx: -10.5, bfy: -4.8, fkx: 4.5, fky: -7.2, ffx: 5.0, ffy: -1.6 },
+      // 2: Passing R (front leg supports under hip, rear knee drives forward)
+      { bkx: 3.5, bky: -10.2, bfx: -2.0, bfy: -5.8, fkx: 0.2, fky: -8.8, ffx: -0.8, ffy: -1.6 },
+      // 3: High Point R (rear leg reaches forward to strike, front pushes back)
+      { bkx: 6.5, bky: -9.5, bfx: 7.5, bfy: -4.2, fkx: -3.0, fky: -8.2, ffx: -6.0, ffy: -2 },
+      // 4: Contact L (rear heel plants forward, front pushes off behind)
+      { bkx: 6.0, bky: -8, bfx: 9.5, bfy: -2, fkx: -4.5, fky: -8, ffx: -9.5, ffy: -2 },
+      // 5: Down L (weight settles onto rear foot, front lifts off floor)
+      { bkx: 4.5, bky: -7.2, bfx: 5.0, bfy: -1.6, fkx: -6.0, fky: -9, ffx: -10.5, ffy: -4.8 },
+      // 6: Passing L (rear leg supports under hip, front knee drives forward)
+      { bkx: 0.2, bky: -8.8, bfx: -0.8, bfy: -1.6, fkx: 3.5, fky: -10.2, ffx: -2.0, ffy: -5.8 },
+      // 7: High Point L (front leg reaches forward to strike, rear pushes back)
+      { bkx: -3.0, bky: -8.2, bfx: -6.0, bfy: -2, fkx: 6.5, fky: -9.5, ffx: 7.5, ffy: -4.2 },
     ];
     const st = strideTable[walkFrame];
-    pxLimb(ctx, bodyDx - 1, hipY, st.bx * 0.6, -9, 5.8, pal.pantsUpperRear, pal.pantsUpperRearDark);
-    pxLimb(ctx, st.bx * 0.6, -9, st.bx, st.by, 5.4, pal.pantsLowerRear, pal.pantsLowerRearDark);
-    drawShoe(st.bx + 1, st.by);
+    pxLimb(ctx, bodyDx - 1, hipY, st.bkx, st.bky, 5.8, pal.pantsUpperRear, pal.pantsUpperRearDark);
+    pxLimb(ctx, st.bkx, st.bky, st.bfx, st.bfy, 5.4, pal.pantsLowerRear, pal.pantsLowerRearDark);
+    drawShoe(st.bfx + 0.8, st.bfy);
 
-    pxLimb(ctx, bodyDx + 1, hipY, st.fx * 0.6, -9, 5.8, pal.pantsUpperFront, pal.pantsUpperFrontDark);
-    pxLimb(ctx, st.fx * 0.6, -9, st.fx, st.fy, 5.4, pal.pantsLowerFront, pal.pantsLowerFrontDark);
-    drawShoe(st.fx + 1, st.fy);
+    pxLimb(ctx, bodyDx + 1, hipY, st.fkx, st.fky, 5.8, pal.pantsUpperFront, pal.pantsUpperFrontDark);
+    pxLimb(ctx, st.fkx, st.fky, st.ffx, st.ffy, 5.4, pal.pantsLowerFront, pal.pantsLowerFrontDark);
+    drawShoe(st.ffx + 0.8, st.ffy);
   } else if (anim === 'hurt' || anim === 'knockdown') {
     pxLimb(ctx, bodyDx - 2, hipY, -8, -8, 5.6, pal.pantsUpperRear, pal.pantsUpperRearDark);
     pxLimb(ctx, -8, -8, -9, -2, 5.2, pal.pantsLowerRear, pal.pantsLowerRearDark);
@@ -1878,36 +1929,42 @@ export function drawVectorPlayer(
   ctx.rotate(leanAngle);
   ctx.translate(-px(bodyDx), -px(hipY));
 
-  // Backpack behind back (rounded ergonomic pack + side pocket & seam highlights)
+  // Backpack behind back (rounded ergonomic pack + step-synced bounce & sway)
+  const walkStepBagY =
+    anim === 'walk' ? [0.6, 1.3, 0.2, -0.7, 0.6, 1.3, 0.2, -0.7][walkFrame] : 0;
+  const walkStepBagX =
+    anim === 'walk' ? [-0.5, -0.8, -0.2, 0.3, -0.5, -0.8, -0.2, 0.3][walkFrame] : 0;
   if (!hasMakeupShield && anim !== 'bagGuard' && anim !== 'bagSpin') {
+    const bagTopY = torsoTopY + walkStepBagY;
+    const bagBaseX = bodyDx + walkStepBagX;
     ctx.save();
     ctx.beginPath();
-    ctx.moveTo(bodyDx - 5, torsoTopY + 1);
-    ctx.quadraticCurveTo(bodyDx - 14.5, torsoTopY + 1.5, bodyDx - 14, torsoTopY + 9);
-    ctx.quadraticCurveTo(bodyDx - 14, torsoTopY + 16, bodyDx - 6, torsoTopY + 16);
+    ctx.moveTo(bagBaseX - 5, bagTopY + 1);
+    ctx.quadraticCurveTo(bagBaseX - 14.5, bagTopY + 1.5, bagBaseX - 14, bagTopY + 9);
+    ctx.quadraticCurveTo(bagBaseX - 14, bagTopY + 16, bagBaseX - 6, bagTopY + 16);
     ctx.closePath();
     ctx.fillStyle = pal.bagMain;
     ctx.fill();
     // Cel shadow along lower curve
     ctx.fillStyle = pal.bagDark;
     ctx.beginPath();
-    ctx.ellipse(bodyDx - 9.5, torsoTopY + 12.5, 4, 3, 0.2, 0, Math.PI);
+    ctx.ellipse(bagBaseX - 9.5, bagTopY + 12.5, 4, 3, 0.2, 0, Math.PI);
     ctx.fill();
     ctx.strokeStyle = '#090d16';
     ctx.lineWidth = 1.3;
     ctx.beginPath();
-    ctx.moveTo(bodyDx - 5, torsoTopY + 1);
-    ctx.quadraticCurveTo(bodyDx - 14.5, torsoTopY + 1.5, bodyDx - 14, torsoTopY + 9);
-    ctx.quadraticCurveTo(bodyDx - 14, torsoTopY + 16, bodyDx - 6, torsoTopY + 16);
+    ctx.moveTo(bagBaseX - 5, bagTopY + 1);
+    ctx.quadraticCurveTo(bagBaseX - 14.5, bagTopY + 1.5, bagBaseX - 14, bagTopY + 9);
+    ctx.quadraticCurveTo(bagBaseX - 14, bagTopY + 16, bagBaseX - 6, bagTopY + 16);
     ctx.closePath();
     ctx.stroke();
     // Side pocket + top highlight seam
-    fillStrokeRoundRect(ctx, bodyDx - 13, torsoTopY + 6.5, 5.5, 6, 1.8, pal.bagPocket, '#090d16', 1.0);
+    fillStrokeRoundRect(ctx, bagBaseX - 13, bagTopY + 6.5, 5.5, 6, 1.8, pal.bagPocket, '#090d16', 1.0);
     ctx.strokeStyle = pal.bagTrim;
     ctx.lineWidth = 1;
     ctx.beginPath();
-    ctx.moveTo(bodyDx - 11.5, torsoTopY + 3.5);
-    ctx.quadraticCurveTo(bodyDx - 9, torsoTopY + 2.2, bodyDx - 6.5, torsoTopY + 3);
+    ctx.moveTo(bagBaseX - 11.5, bagTopY + 3.5);
+    ctx.quadraticCurveTo(bagBaseX - 9, bagTopY + 2.2, bagBaseX - 6.5, bagTopY + 3);
     ctx.stroke();
     ctx.restore();
   }
@@ -1918,6 +1975,16 @@ export function drawVectorPlayer(
     pxLimb(ctx, bodyDx + 1, torsoTopY + 4, bodyDx + 6, torsoTopY + 5 + fBob, 4.6, pal.shirtShadow, '#475569');
     pxLimb(ctx, bodyDx + 6, torsoTopY + 5 + fBob, bodyDx + 7, torsoTopY - 2 + fBob, 4.2, skinTone, skinShade);
     celFist(ctx, bodyDx + 7.5, torsoTopY - 3 + fBob, 5.2, skinTone, skinShade);
+  } else if (anim === 'jumpPunch') {
+    if (animProgress < 0.25) {
+      pxLimb(ctx, bodyDx + 1, torsoTopY + 4, bodyDx + 7, torsoTopY + 5, 4.6, pal.shirtShadow, '#475569');
+      celFist(ctx, bodyDx + 8, torsoTopY + 4.5, 5.1, skinTone, skinShade);
+    } else {
+      pxLimb(ctx, bodyDx - 2, torsoTopY + 4.5, bodyDx - 6, torsoTopY + 8, 4.6, pal.sleeveShadow, '#334155');
+      celRolledCuff(ctx, bodyDx - 4.5, torsoTopY + 7.5, 0.35, 4.6, pal.sleeveMain, pal.sleeveShadow);
+      pxLimb(ctx, bodyDx - 4.5, torsoTopY + 7.5, bodyDx + 1, torsoTopY + 4.5, 4.2, skinTone, skinShade);
+      celFist(ctx, bodyDx + 1.5, torsoTopY + 4, 5.2, skinTone, skinShade);
+    }
   } else if (anim === 'jumpKick' || anim === 'cranePrep' || anim === 'craneKick' || anim === 'trinityFreeze' || isTrinityCoil) {
     pxLimb(ctx, bodyDx - 3, torsoTopY + 3, bodyDx - 11, torsoTopY - 3, 4.5, pal.sleeveShadow, '#334155');
     pxLimb(ctx, bodyDx - 11, torsoTopY - 3, bodyDx - 15, torsoTopY - 9, 4.2, skinTone, skinShade);
@@ -1963,10 +2030,16 @@ export function drawVectorPlayer(
     pxLimb(ctx, bodyDx - 2, torsoTopY + 3, strikeX, strikeY, 4.8, pal.sleeveShadow, '#334155');
     celFist(ctx, strikeX, strikeY, 6.2, skinTone, skinShade);
   } else if (anim === 'idle' || anim === 'walk') {
-    const rSwing = anim === 'walk' ? (walkFrame < 2 ? -2 : 2) : 0;
-    pxLimb(ctx, bodyDx - 3, torsoTopY + 4, bodyDx - 5 + rSwing, torsoTopY + 9, 4.5, pal.shirtShadow, '#475569');
-    pxLimb(ctx, bodyDx - 5 + rSwing, torsoTopY + 9, bodyDx - 1 + rSwing, torsoTopY + 7, 4.2, skinTone, skinShade);
-    celFist(ctx, bodyDx - 0.5 + rSwing, torsoTopY + 6.5, 4.8, skinTone, skinShade);
+    // Opposite arm swing synced to 8-frame walk cycle (rear arm forward when front leg plants back, etc.)
+    const rSwing = anim === 'walk' ? [3.6, 2.4, 0, -2.6, -3.8, -2.4, 0, 2.6][walkFrame] : 0;
+    const rLift = anim === 'walk' ? [-0.6, -0.2, 0.5, -0.3, -0.8, -0.3, 0.5, -0.3][walkFrame] : 0;
+    const elbowX = bodyDx - 3 + rSwing * 0.7;
+    const elbowY = torsoTopY + 9 + rLift;
+    const handX = bodyDx + 1.5 + rSwing * 1.15;
+    const handY = torsoTopY + 6.8 + (rSwing > 0 ? -0.9 : 0.6);
+    pxLimb(ctx, bodyDx - 3, torsoTopY + 4, elbowX, elbowY, 4.5, pal.shirtShadow, '#475569');
+    pxLimb(ctx, elbowX, elbowY, handX, handY, 4.2, skinTone, skinShade);
+    celFist(ctx, handX + 0.6, handY - 0.4, 4.8, skinTone, skinShade);
   }
 
   // Torso (Cel-shaded tapered dress shirt / outfit + fold lines + V-collar)
@@ -2096,8 +2169,16 @@ export function drawVectorPlayer(
     ctx.stroke();
   }
 
-  // Dynamic tapered necktie (Gravata) with knot & blade highlight
-  const tieShift = anim === 'hurt' ? -2.5 : anim === 'walk' ? (walkFrame % 2 === 0 ? -1.2 : 1.2) : anim === 'punch1' || anim === 'punch2' || anim === 'heavyPunch' ? -1.6 : 0;
+  // Dynamic tapered necktie (Gravata) synced with steps, attacks & hurt
+  const walkTieTable = [-1.4, -2.0, -0.5, 1.0, 0.2, -1.6, -0.4, 1.1];
+  const tieShift =
+    anim === 'hurt'
+      ? -2.5
+      : anim === 'walk'
+        ? walkTieTable[walkFrame]
+        : anim === 'punch1' || anim === 'punch2' || anim === 'heavyPunch' || anim === 'jumpPunch'
+          ? -1.6
+          : 0;
   if (!pal.hideChestTie) {
     ctx.save();
     // Blade
@@ -2811,6 +2892,33 @@ export function drawVectorPlayer(
     celRolledCuff(ctx, bodyDx + 7.2, torsoTopY + 5.8 + fBob, -0.5, 4.8, pal.sleeveMain, pal.sleeveShadow);
     pxLimb(ctx, bodyDx + 7.5, torsoTopY + 5.5 + fBob, bodyDx + 13, torsoTopY + 1 + fBob, 4.4, skinTone, skinShade);
     celFist(ctx, bodyDx + 13.5, torsoTopY + 0.5 + fBob, 5.6, skinTone, skinShade);
+  } else if (anim === 'jumpPunch') {
+    if (animProgress < 0.25) {
+      // Quick air prep: elbow and fist coiled at ribs
+      const pull = animProgress / 0.25;
+      const backX = bodyDx - 2.5 * pull;
+      pxLimb(ctx, bodyDx + 2, torsoTopY + 4, backX - 1, torsoTopY + 6.5, 5.0, pal.sleeveMain, pal.sleeveShadow);
+      celRolledCuff(ctx, backX - 1, torsoTopY + 6.5, -0.25, 5.0, pal.sleeveMain, pal.sleeveShadow);
+      pxLimb(ctx, backX - 1, torsoTopY + 6.5, backX + 2.5, torsoTopY + 4, 4.5, skinTone, skinShade);
+      celFist(ctx, backX + 3.5, torsoTopY + 3.8, 5.8, skinTone, skinShade);
+    } else if (animProgress < 0.72) {
+      // Snapped forward airborne fist extension with speed smear
+      const maxReach = 24;
+      pxLimb(ctx, bodyDx + 2, torsoTopY + 3.5, bodyDx + 11.5, torsoTopY + 3.8, 5.2, pal.sleeveMain, pal.sleeveShadow);
+      celRolledCuff(ctx, bodyDx + 12, torsoTopY + 3.8, 0, 5.1, pal.sleeveMain, pal.sleeveShadow);
+      pxLimb(ctx, bodyDx + 13, torsoTopY + 3.8, bodyDx + maxReach, torsoTopY + 3.6, 4.6, skinTone, skinShade);
+      celFist(ctx, bodyDx + maxReach + 1.5, torsoTopY + 3.4, 6.4, skinTone, skinShade);
+      ctx.fillStyle = 'rgba(254, 240, 138, 0.85)';
+      ctx.fillRect(bodyDx + 11, torsoTopY + 0.6, 12, 1.3);
+    } else {
+      // Natural airborne recovery back toward guard
+      const rec = Math.max(0, 1 - (animProgress - 0.72) / 0.28);
+      const extX = bodyDx + 9 + rec * 14;
+      pxLimb(ctx, bodyDx + 2, torsoTopY + 4, bodyDx + 6 + rec * 5, torsoTopY + 4.2, 5.0, pal.sleeveMain, pal.sleeveShadow);
+      celRolledCuff(ctx, bodyDx + 6.5 + rec * 5, torsoTopY + 4.2, 0, 5.0, pal.sleeveMain, pal.sleeveShadow);
+      pxLimb(ctx, bodyDx + 7 + rec * 5, torsoTopY + 4.2, extX, torsoTopY + 3.8, 4.5, skinTone, skinShade);
+      celFist(ctx, extX + 1, torsoTopY + 3.5, 5.8, skinTone, skinShade);
+    }
   } else if (anim === 'jumpKick' || anim === 'cranePrep' || anim === 'craneKick' || anim === 'trinityFreeze') {
     pxLimb(ctx, bodyDx + 3, torsoTopY + 3, bodyDx + 11, torsoTopY - 3, 4.5, pal.sleeveMain, pal.sleeveShadow);
     pxLimb(ctx, bodyDx + 11, torsoTopY - 3, bodyDx + 15, torsoTopY - 9, 4.3, skinTone, skinShade);
@@ -2840,19 +2948,25 @@ export function drawVectorPlayer(
     pxLimb(ctx, bodyDx - 2, torsoTopY + 4, bodyDx - 16 + f2, torsoTopY + 3, 4.2, pal.sleeveShadow, '#334155');
     celFist(ctx, bodyDx - 17 + f2, torsoTopY + 3, 5.2, '#fde047', '#ca8a04');
   } else {
-    const swing = anim === 'walk' ? (walkFrame < 2 ? 2 : -2) : 0;
-    pxLimb(ctx, bodyDx + 2, torsoTopY + 4, bodyDx + 5 + swing, torsoTopY + 9, 4.7, pal.sleeveMain, pal.sleeveShadow);
-    celRolledCuff(ctx, bodyDx + 5.2 + swing, torsoTopY + 8.5, -0.35, 4.6, pal.sleeveMain, pal.sleeveShadow);
-    pxLimb(ctx, bodyDx + 5.5 + swing, torsoTopY + 8.5, bodyDx + 9 + swing, torsoTopY + 6, 4.3, skinTone, skinShade);
-    celFist(ctx, bodyDx + 10 + swing, torsoTopY + 5.5, 5.2, skinTone, skinShade);
+    // Lead arm synced in opposition to legs across 8-frame walk cycle
+    const swing = anim === 'walk' ? [-3.8, -2.5, 0, 2.5, 3.8, 2.5, 0, -2.5][walkFrame] : 0;
+    const elbowLift = anim === 'walk' ? [0.4, 0.1, -0.5, 0.2, 0.5, 0.1, -0.5, 0.2][walkFrame] : 0;
+    const elbowX = bodyDx + 4.8 + swing * 0.7;
+    const elbowY = torsoTopY + 9 + elbowLift;
+    const fistX = bodyDx + 9 + swing * 1.15;
+    const fistY = torsoTopY + 6 + (swing > 0 ? -0.9 : 0.7);
+    pxLimb(ctx, bodyDx + 2, torsoTopY + 4, elbowX, elbowY, 4.7, pal.sleeveMain, pal.sleeveShadow);
+    celRolledCuff(ctx, elbowX + 0.2, elbowY - 0.5, -0.35, 4.6, pal.sleeveMain, pal.sleeveShadow);
+    pxLimb(ctx, elbowX + 0.5, elbowY - 0.5, fistX, fistY, 4.3, skinTone, skinShade);
+    celFist(ctx, fistX + 0.8, fistY - 0.5, 5.2, skinTone, skinShade);
 
     if (hasCane) {
       ctx.strokeStyle = '#090d16';
       ctx.lineWidth = 4.6;
       ctx.beginPath();
-      ctx.moveTo(bodyDx + 9 + swing, torsoTopY + 6);
-      ctx.lineTo(bodyDx + 19 + swing, torsoTopY - 4);
-      ctx.arc(bodyDx + 20 + swing, torsoTopY - 2, 2.5, -Math.PI * 0.75, Math.PI * 0.35, false);
+      ctx.moveTo(fistX, fistY);
+      ctx.lineTo(fistX + 10, fistY - 10);
+      ctx.arc(fistX + 11, fistY - 8, 2.5, -Math.PI * 0.75, Math.PI * 0.35, false);
       ctx.stroke();
       ctx.strokeStyle = '#92400e';
       ctx.lineWidth = 2.6;
@@ -3112,13 +3226,13 @@ export function drawVectorEnemy(
 
   const isLargeBoss = type === 'boss_cobrador_blindado' || type === 'boss_cobrador';
   const shadowW = isLargeBoss ? 22 : 16;
-  ctx.fillStyle = 'rgba(8, 12, 28, 0.56)';
+  ctx.fillStyle = 'rgba(6, 9, 22, 0.66)';
   ctx.beginPath();
-  ctx.ellipse(x + 2 * facing, y + 0.6, shadowW, 3.6, 0, 0, Math.PI * 2);
+  ctx.ellipse(x + 2 * facing, y + 0.6, shadowW, 3.8, 0, 0, Math.PI * 2);
   ctx.fill();
-  ctx.fillStyle = 'rgba(8, 12, 28, 0.32)';
+  ctx.fillStyle = 'rgba(6, 9, 22, 0.40)';
   ctx.beginPath();
-  ctx.ellipse(x + 4 * facing, y + 1.2, shadowW + 4, 2.4, 0, 0, Math.PI * 2);
+  ctx.ellipse(x + 4 * facing, y + 1.2, shadowW + 4, 2.6, 0, 0, Math.PI * 2);
   ctx.fill();
 
   // Stink aura for Industry Worker (minimal clean 16-bit dots)
@@ -5446,14 +5560,14 @@ export function drawVectorBusInterior(
           : 0
         : ambientDip;
 
-    fillStrokeRoundRect(ctx, fx, 4, 52, 9, 2.5, '#1e293b', '#090d16', 1.2);
-    const coreColor = tubeDim > 0.4 ? '#64748b' : tubeDim > 0.1 ? '#bae6fd' : '#ffffff';
-    const haloColor = tubeDim > 0.4 ? '#334155' : '#7dd3fc';
+    fillStrokeRoundRect(ctx, fx, 4, 52, 9, 2.5, '#0f172a', '#090d16', 1.2);
+    const coreColor = tubeDim > 0.4 ? '#64748b' : tubeDim > 0.1 ? '#67e8f9' : '#ecfeff';
+    const haloColor = tubeDim > 0.4 ? '#334155' : '#22d3ee';
     pxRect(ctx, fx + 3, 6, 46, 5, haloColor);
     pxRect(ctx, fx + 5, 7, 42, 3, coreColor);
 
     if (tubeDim < 0.5) {
-      const coneAlpha = (isMorningLine ? 0.06 : isSunriseLine ? 0.09 : 0.14 + comboFlicker * 0.08) * (1 - tubeDim);
+      const coneAlpha = (isMorningLine ? 0.10 : isSunriseLine ? 0.13 : 0.19 + comboFlicker * 0.09) * (1 - tubeDim);
       const { coneGrad } = getBusInteriorGradients(ctx);
       ctx.save();
       ctx.globalAlpha = coneAlpha;
@@ -5461,8 +5575,8 @@ export function drawVectorBusInterior(
       ctx.beginPath();
       ctx.moveTo(fx + 3, 13);
       ctx.lineTo(fx + 49, 13);
-      ctx.lineTo(fx + 84, 146);
-      ctx.lineTo(fx - 32, 146);
+      ctx.lineTo(fx + 86, 146);
+      ctx.lineTo(fx - 34, 146);
       ctx.closePath();
       ctx.fill();
       ctx.restore();
@@ -5725,14 +5839,14 @@ export function drawVectorBusInterior(
   ctx.fillStyle = floorGrad;
   ctx.fillRect(0, 148, W, 88);
 
-  // Subtle window-bay vertical light reflection columns on the glossy vinyl floor (matching reference!)
-  const reflAlpha = isBrightExterior ? 0.14 : 0.08;
+  // Subtle window-bay vertical neon-tinted light reflection columns on the glossy vinyl floor
+  const reflAlpha = isBrightExterior ? 0.16 : 0.13;
   for (let b = firstBayIdx; b <= firstBayIdx + 6; b++) {
     const rx = px(b * 116 - camX + 16);
     const reflGrad = ctx.createLinearGradient(0, 148, 0, 234);
-    reflGrad.addColorStop(0, `rgba(186, 230, 253, ${reflAlpha})`);
-    reflGrad.addColorStop(0.55, `rgba(147, 197, 253, ${(reflAlpha * 0.85).toFixed(2)})`);
-    reflGrad.addColorStop(1, `rgba(147, 197, 253, ${(reflAlpha * 0.25).toFixed(2)})`);
+    reflGrad.addColorStop(0, `rgba(103, 232, 249, ${reflAlpha})`);
+    reflGrad.addColorStop(0.55, `rgba(56, 189, 248, ${(reflAlpha * 0.85).toFixed(2)})`);
+    reflGrad.addColorStop(1, `rgba(56, 189, 248, ${(reflAlpha * 0.25).toFixed(2)})`);
     ctx.fillStyle = reflGrad;
     ctx.fillRect(rx, 148, 92, 86);
   }
@@ -5740,7 +5854,7 @@ export function drawVectorBusInterior(
   // Anti-slip rubber vinyl floor speckle dots
   for (let fx = -(camX % 28); fx < W; fx += 28) {
     for (let fy = 156; fy < 230; fy += 18) {
-      ctx.fillStyle = (fx + fy) % 2 === 0 ? 'rgba(226, 232, 240, 0.22)' : 'rgba(15, 23, 42, 0.26)';
+      ctx.fillStyle = (fx + fy) % 2 === 0 ? 'rgba(226, 232, 240, 0.22)' : 'rgba(15, 23, 42, 0.34)';
       ctx.fillRect(px(fx + (fy % 7)), fy, 1.5, 1.5);
     }
   }
@@ -5748,14 +5862,16 @@ export function drawVectorBusInterior(
   // Projected shadow cast by the row of bus seats & foreground edge onto the aisle floor
   const { seatCastShadow, fgCastShadow } = getBusInteriorGradients(ctx);
   ctx.fillStyle = seatCastShadow;
-  ctx.fillRect(0, 148, W, 28);
+  ctx.fillRect(0, 148, W, 30);
 
   ctx.fillStyle = fgCastShadow;
-  ctx.fillRect(0, 212, W, 24);
+  ctx.fillRect(0, 210, W, 26);
 
-  // Crisp top/bottom yellow aisle curb strips
+  // Crisp top/bottom yellow aisle curb strips with subtle neon rim highlight
   pxBlockShaded(ctx, -4, 146, W + 8, 4, '#facc15', '#ca8a04', '#fef08a');
   pxBlockShaded(ctx, -4, 234, W + 8, 4, '#facc15', '#ca8a04', '#fef08a');
+  ctx.fillStyle = 'rgba(56, 189, 248, 0.24)';
+  ctx.fillRect(0, 145, W, 1);
 
   // Subtle floor inspection hatches
   ctx.strokeStyle = 'rgba(15, 23, 42, 0.52)';

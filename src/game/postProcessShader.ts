@@ -82,8 +82,15 @@ const FRAGMENT_SHADER_SRC = `
     float levels = mix(56.0, 26.0, ditherStrength);
     vec3 dithered = floor(color * levels + (threshold - 0.5) * (0.45 * ditherStrength + 0.12)) / levels;
 
-    float stippleDarken = (1.0 - step(threshold, shadowBand * 0.45 + softEdgeMask * 0.25)) * ditherStrength * 0.05;
+    float stippleDarken = (1.0 - step(threshold, shadowBand * 0.45 + softEdgeMask * 0.25)) * ditherStrength * 0.055;
     vec3 finalColor = clamp(mix(color, dithered, max(0.18, ditherStrength * 0.55)) * (1.0 - stippleDarken), 0.0, 1.0);
+
+    // Subtle shadow contrast + neon vibrance lift without clipping whites
+    float finalLuma = luminance(finalColor);
+    float shadowDepth = 1.0 - (1.0 - smoothstep(0.02, 0.26, finalLuma)) * 0.14;
+    finalColor *= shadowDepth;
+    float neonSat = 1.0 + smoothstep(0.32, 0.85, finalLuma) * 0.10;
+    finalColor = clamp(mix(vec3(finalLuma), finalColor, neonSat), 0.0, 1.0);
 
     gl_FragColor = vec4(finalColor, 1.0);
   }
