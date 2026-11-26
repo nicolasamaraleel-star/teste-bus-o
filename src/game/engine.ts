@@ -179,6 +179,9 @@ export class BusBeatEmUpEngine {
   private hudSyncTimer = 0;
   private bufferedAction: ActionKey | null = null;
   private bufferTimer = 0;
+  private airAttackUsed = false;
+  private victoryPoseCycle = 0;
+  private levelClearTransition: { timer: number; pose: PlayerAnimState } | null = null;
   private hitChainTimer = 0;
   private staticRenderedState: GameState | null = null;
   private pendingBossSpawns: Array<{
@@ -295,7 +298,7 @@ export class BusBeatEmUpEngine {
     const wasHeld = this.heldKeys.has(code);
     this.heldKeys.add(code);
 
-    if (!wasHeld) {
+    if (!wasHeld && !e.repeat) {
       if (code === 'KeyJ' || code === 'KeyZ') this.triggerAction('punch');
       else if (code === 'KeyK' || code === 'KeyX') this.triggerAction('kick');
       else if (code === 'Space') this.triggerAction('jump');
@@ -472,6 +475,9 @@ export class BusBeatEmUpEngine {
     this.player.vz = 0;
     this.player.facing = 1;
     this.setPlayerAnim('idle', 0);
+    this.airAttackUsed = false;
+    this.levelClearTransition = null;
+    this.clearBufferedComboInput();
     this.player.stickySlowTimer = 0;
     this.player.bagSkillCooldown = 0;
 
@@ -517,6 +523,7 @@ export class BusBeatEmUpEngine {
     this.infiniteTimeLeft = 75;
     this.infiniteThemeLineIdx = 0;
     this.hitChainTimer = 0;
+    this.victoryPoseCycle = 0;
     this.dailyRunCounted = false;
     this.heldKeys.clear();
     this.resetPlayer();
@@ -612,7 +619,7 @@ export class BusBeatEmUpEngine {
   }
 
   public triggerAction(action: ActionKey) {
-    if (this.gameState !== 'PLAYING' || this.bossFinisherState) return;
+    if (this.gameState !== 'PLAYING' || this.bossFinisherState || this.levelClearTransition) return;
 
     const p = this.player;
     const isAttacking =
@@ -623,6 +630,7 @@ export class BusBeatEmUpEngine {
       p.anim === 'cane' ||
       p.anim === 'kick' ||
       p.anim === 'kickFinisher' ||
+      p.anim === 'jumpPunch' ||
       p.anim === 'jumpKick' ||
       p.anim === 'railSpin' ||
       p.anim === 'railSlam' ||
@@ -633,12 +641,18 @@ export class BusBeatEmUpEngine {
       p.anim === 'spray';
 
     if (p.anim === 'hurt' || p.anim === 'knockdown') {
+      this.clearBufferedComboInput();
       return;
     }
-    if (p.anim === 'victory') {
+    if (this.isVictoryAnim(p.anim)) {
       if (p.animTimer > 0.6) return;
       this.setPlayerAnim('idle', 0);
     }
+
+    const standingOnSeat = Boolean(
+      this.getEmptySeatUnderPlayer(156) && Math.abs(p.z - 24) <= 2
+    );
+    const isGrounded = p.z === 0 || standingOnSeat;
 
     if (action === 'bagGuard') {
       if (p.anim === 'bagGuard') {
@@ -648,10 +662,24 @@ export class BusBeatEmUpEngine {
       if (p.bagSkillCooldown > 0) {
         return;
       }
+      if (isAttacking) {
+        const canBufferFromGround =
+          isGrounded &&
+          p.anim !== 'special' &&
+          p.anim !== 'soundSpecial' &&
+          p.anim !== 'railSlam' &&
+          p.anim !== 'jumpKick' &&
+          p.anim !== 'jumpPunch';
+        if (canBufferFromGround) {
+          this.bufferedAction = 'bagGuard';
+          this.bufferTimer = Math.max(0.28, p.animTimer + 0.16);
+        }
+        return;
+      }
       this.setPlayerAnim('bagGuard', 0.52);
       p.bagSkillCooldown = 2.0;
       p.attackHasHit = false;
-      this.bufferedAction = null;
+      this.clearBufferedComboInput();
       audio.playBagGuard();
       this.spawnParticles(p.x + p.facing * 10, p.y, p.z + 18, '#38bdf8', 8);
       this.pushHudSnapshot();
@@ -669,14 +697,17 @@ export class BusBeatEmUpEngine {
     }
 
     if (action === 'jump') {
-      const standingOnSeat = Boolean(this.getEmptySeatUnderPlayer(156) && Math.abs(p.z - 24) <= 2);
-      if ((p.z === 0 || standingOnSeat) && !isAttacking) {
+      if (isGrounded && !isAttacking) {
+        this.clearBufferedComboInput();
         p.vz = 265;
+        this.airAttackUsed = false;
         this.setPlayerAnim('jump', 0);
         this.seatRestHoldTimer = 0;
         audio.playJump();
       } else if (p.z > 10 && p.anim !== 'railGrab' && p.anim !== 'railSpin' && !isAttacking) {
         // Grab onto the yellow strap hanging from the horizontal overhead bar!
+        this.clearBufferedComboInput();
+        this.airAttackUsed = false;
         this.setPlayerAnim('railGrab', 0.7);
         p.z = Math.max(p.z, Math.min(62, Math.max(36, p.y - 138)));
         p.vz = 0;
@@ -704,6 +735,7 @@ export class BusBeatEmUpEngine {
 
     if (action === 'special') {
       if (p.specialEnergy >= 100 && !isAttacking) {
+        this.clearBufferedComboInput();
         p.specialEnergy = 0;
         this.setPlayerAnim('soundSpecial', 0.42);
         p.attackHasHit = false;
@@ -737,6 +769,7 @@ export class BusBeatEmUpEngine {
         this.pushHudSnapshot();
         this.trackDailyMission('use_special', 1);
       } else if (p.hp > 10 && !isAttacking) {
+        this.clearBufferedComboInput();
         p.hp = Math.max(1, p.hp - 8);
         this.resetComboStreak();
         this.setPlayerAnim('special', 0.46);
@@ -768,6 +801,7 @@ export class BusBeatEmUpEngine {
     }
 
     if (p.anim === 'railGrab' && (action === 'kick' || action === 'punch')) {
+      this.clearBufferedComboInput();
       this.setPlayerAnim('railSpin', 0.38);
       p.attackHasHit = false;
       p.invulnTimer = Math.max(p.invulnTimer, 0.35);
@@ -778,22 +812,50 @@ export class BusBeatEmUpEngine {
       return;
     }
 
-    if (p.z > 0 && (action === 'kick' || action === 'punch')) {
-      if (p.anim !== 'jumpKick' && p.anim !== 'railSpin') {
-        this.setPlayerAnim('jumpKick', 0.36);
-        p.attackHasHit = false;
-        audio.playKick();
-        if (this.hasNearbyActiveBoss(195)) {
-          this.bossBulletTimeTimer = Math.max(this.bossBulletTimeTimer, 0.56);
-          p.vz = Math.max(p.vz, 58);
+    if (p.z > 0 && !standingOnSeat && (action === 'kick' || action === 'punch')) {
+      if (
+        !this.airAttackUsed &&
+        p.anim !== 'jumpKick' &&
+        p.anim !== 'jumpPunch' &&
+        p.anim !== 'railSpin' &&
+        !isAttacking
+      ) {
+        this.airAttackUsed = true;
+        this.clearBufferedComboInput();
+        if (action === 'punch') {
+          this.setPlayerAnim('jumpPunch', 0.30);
+          p.attackHasHit = false;
+          audio.playPunch();
+        } else {
+          this.setPlayerAnim('jumpKick', 0.36);
+          p.attackHasHit = false;
+          audio.playKick();
+          if (this.hasNearbyActiveBoss(195)) {
+            this.bossBulletTimeTimer = Math.max(this.bossBulletTimeTimer, 0.56);
+            p.vz = Math.max(p.vz, 58);
+          }
         }
       }
       return;
     }
 
     if (isAttacking) {
-      this.bufferedAction = action;
-      this.bufferTimer = 0.22;
+      const canBufferCombo =
+        isGrounded &&
+        (action === 'punch' || action === 'kick') &&
+        p.anim !== 'special' &&
+        p.anim !== 'soundSpecial' &&
+        p.anim !== 'railSlam' &&
+        p.anim !== 'jumpKick' &&
+        p.anim !== 'jumpPunch' &&
+        p.anim !== 'railSpin' &&
+        p.anim !== 'bagSpin' &&
+        p.anim !== 'spray' &&
+        p.anim !== 'headphoneWhip';
+      if (canBufferCombo) {
+        this.bufferedAction = action;
+        this.bufferTimer = Math.max(0.28, p.animTimer + 0.16);
+      }
       return;
     }
 
@@ -807,7 +869,7 @@ export class BusBeatEmUpEngine {
     p.invulnTimer = Math.max(p.invulnTimer, 0.44);
     if (fromParry) {
       p.bagSkillCooldown = Math.min(p.bagSkillCooldown, 0.9);
-      p.specialEnergy = Math.min(100, p.specialEnergy + 16);
+      this.addSpecialEnergy(16);
       p.score += 100;
       this.bagParryCount++;
       this.trackDailyMission('bag_parries', 1);
@@ -834,7 +896,7 @@ export class BusBeatEmUpEngine {
     p.vz = -430;
     p.attackHasHit = false;
     p.invulnTimer = Math.max(p.invulnTimer, 0.55);
-    this.bufferedAction = null;
+    this.clearBufferedComboInput();
     audio.playSpecial();
     vibrateSpecial('slam');
     this.spawnParticles(p.x, p.y, p.z + 18, p.rageTimer > 0 ? '#ef4444' : '#facc15', 10);
@@ -920,7 +982,7 @@ export class BusBeatEmUpEngine {
 
     if (hitCount > 0) {
       this.registerHitChain(hitCount);
-      p.specialEnergy = Math.min(100, p.specialEnergy + 14);
+      this.addSpecialEnergy(14);
       this.comboFlickerIntensity = 1;
       this.comboFlickerTimer = Math.max(this.comboFlickerTimer, 1.0);
     }
@@ -929,6 +991,12 @@ export class BusBeatEmUpEngine {
 
   private executeGroundAttack(action: ActionKey) {
     const p = this.player;
+    if (p.anim === 'hurt' || p.anim === 'knockdown') return;
+    const standingOnSeat = Boolean(
+      this.getEmptySeatUnderPlayer(156) && Math.abs(p.z - 24) <= 2
+    );
+    if (p.z > 0 && !standingOnSeat) return;
+
     if (action === 'punch') {
       if (p.comboMultiplier >= 7 && !p.headphoneWhipUsed) {
         p.headphoneWhipUsed = true;
@@ -950,10 +1018,11 @@ export class BusBeatEmUpEngine {
         if (p.comboStep === 2) {
           this.setPlayerAnim('heavyPunch', 0.44);
           p.comboResetTimer = 0;
+          p.comboStep = 0;
           p.attackHasHit = false;
         } else {
           this.setPlayerAnim(p.comboStep === 0 ? 'punch1' : 'punch2', p.comboStep === 0 ? 0.22 : 0.24);
-          p.comboResetTimer = 0.5;
+          p.comboResetTimer = 0.54;
           p.attackHasHit = false;
           audio.playPunch();
         }
@@ -962,10 +1031,13 @@ export class BusBeatEmUpEngine {
       if (p.comboResetTimer > 0) {
         this.setPlayerAnim('kickFinisher', 0.38);
         p.comboResetTimer = 0;
+        p.comboStep = 0;
         p.attackHasHit = false;
         audio.playKick();
       } else {
         this.setPlayerAnim('kick', 0.28);
+        p.comboStep = 0;
+        p.comboResetTimer = 0.54;
         p.attackHasHit = false;
         audio.playKick();
       }
@@ -991,7 +1063,7 @@ export class BusBeatEmUpEngine {
       p.credits -= cost;
       this.ticketValidated = true;
       p.score += 300;
-      p.specialEnergy = Math.min(100, p.specialEnergy + 18);
+      this.addSpecialEnergy(18);
       audio.playValidate();
       this.spawnParticles(this.line.validatorX, 155, 25, '#10b981', 16);
       if (!this.damageTakenThisLine) {
@@ -1043,7 +1115,7 @@ export class BusBeatEmUpEngine {
     }
     if (hit > 0) {
       this.registerHitChain(hit);
-      p.specialEnergy = Math.min(100, p.specialEnergy + 12);
+      this.addSpecialEnergy(12);
       audio.playMetallicImpact(true);
     }
     this.pushHudSnapshot();
@@ -1180,7 +1252,10 @@ export class BusBeatEmUpEngine {
   private updatePlayerSpecialElectricParticles(dt: number) {
     const p = this.player;
     const isSpecialReady =
-      this.gameState === 'PLAYING' && p.specialEnergy >= 100 && p.anim !== 'victory';
+      this.gameState === 'PLAYING' &&
+      p.specialEnergy >= 100 &&
+      !this.isVictoryAnim(p.anim) &&
+      !this.levelClearTransition;
     const reduced = this.isReducedMotionPreferred();
 
     if (isSpecialReady) {
@@ -1620,6 +1695,34 @@ export class BusBeatEmUpEngine {
     }
   }
 
+  private clearBufferedComboInput() {
+    this.bufferedAction = null;
+    this.bufferTimer = 0;
+  }
+
+  private addSpecialEnergy(amount: number) {
+    if (amount <= 0) return;
+    // +15% longer special charge time
+    const scaled = Math.round((amount / 1.15) * 10) / 10;
+    this.player.specialEnergy = Math.min(100, this.player.specialEnergy + scaled);
+  }
+
+  private isVictoryAnim(anim: PlayerAnimState): boolean {
+    return (
+      anim === 'victory' ||
+      anim === 'victoryTie' ||
+      anim === 'victoryBadge' ||
+      anim === 'victoryCoffee'
+    );
+  }
+
+  private pickUniqueVictoryPose(): PlayerAnimState {
+    const poses: PlayerAnimState[] = ['victory', 'victoryTie', 'victoryBadge', 'victoryCoffee'];
+    const pose = poses[(this.currentLineIdx + this.victoryPoseCycle) % poses.length];
+    this.victoryPoseCycle++;
+    return pose;
+  }
+
   private setPlayerAnim(anim: PlayerAnimState, duration = 0) {
     this.player.anim = anim;
     this.player.animTimer = duration;
@@ -1672,6 +1775,19 @@ export class BusBeatEmUpEngine {
     }
 
     if (this.gameState !== 'PLAYING') {
+      return;
+    }
+
+    if (this.levelClearTransition) {
+      this.updateParticles(dt);
+      this.player.invulnTimer = Math.max(this.player.invulnTimer, 0.25);
+      this.player.animTimer = Math.max(0, this.player.animTimer - dt);
+      this.levelClearTransition.timer -= dt;
+      if (this.levelClearTransition.timer <= 0) {
+        const pose = this.levelClearTransition.pose;
+        this.levelClearTransition = null;
+        this.finishReachExitDoor(pose);
+      }
       return;
     }
 
@@ -2061,13 +2177,6 @@ export class BusBeatEmUpEngine {
     if (p.rageNotificationTimer > 0) {
       p.rageNotificationTimer = Math.max(0, p.rageNotificationTimer - dt);
     }
-    if (p.comboResetTimer > 0) p.comboResetTimer = Math.max(0, p.comboResetTimer - dt);
-
-    if (this.bufferTimer > 0) {
-      this.bufferTimer -= dt;
-      if (this.bufferTimer <= 0) this.bufferedAction = null;
-    }
-
     const isAttacking =
       p.anim === 'punch1' ||
       p.anim === 'punch2' ||
@@ -2076,6 +2185,7 @@ export class BusBeatEmUpEngine {
       p.anim === 'cane' ||
       p.anim === 'kick' ||
       p.anim === 'kickFinisher' ||
+      p.anim === 'jumpPunch' ||
       p.anim === 'jumpKick' ||
       p.anim === 'railSpin' ||
       p.anim === 'railSlam' ||
@@ -2084,6 +2194,20 @@ export class BusBeatEmUpEngine {
       p.anim === 'soundSpecial' ||
       p.anim === 'headphoneWhip' ||
       p.anim === 'spray';
+
+    if (!isAttacking && p.comboResetTimer > 0) {
+      p.comboResetTimer = Math.max(0, p.comboResetTimer - dt);
+    }
+
+    if (this.bufferTimer > 0) {
+      if (isAttacking && p.animTimer > 0 && this.bufferedAction) {
+        // Keep valid buffered command alive until the active attack animation reaches recovery
+        this.bufferTimer = Math.max(0.08, this.bufferTimer - dt);
+      } else {
+        this.bufferTimer -= dt;
+        if (this.bufferTimer <= 0) this.clearBufferedComboInput();
+      }
+    }
 
     let ix = this.virtualMove.x;
     let iy = this.virtualMove.y;
@@ -2114,7 +2238,7 @@ export class BusBeatEmUpEngine {
       if (p.animTimer <= 0) {
         this.setPlayerAnim('idle', 0);
       }
-    } else if (p.anim === 'victory') {
+    } else if (this.isVictoryAnim(p.anim)) {
       p.animTimer -= dt;
       p.invulnTimer = Math.max(p.invulnTimer, 0.12);
       p.vx *= Math.pow(0.02, dt);
@@ -2151,7 +2275,7 @@ export class BusBeatEmUpEngine {
         p.x += ix * 65 * dt;
       } else {
         p.animTimer -= dt;
-        if (p.anim === 'jumpKick' || p.anim === 'railSpin') {
+        if (p.anim === 'jumpKick' || p.anim === 'jumpPunch' || p.anim === 'railSpin') {
           p.x += ix * 95 * dt;
         } else if (p.anim === 'heavyPunch') {
           if (p.animTimer <= 0.3 && p.animTimer + dt > 0.3) {
@@ -2176,6 +2300,7 @@ export class BusBeatEmUpEngine {
           (p.anim !== 'heavyPunch' || p.animTimer <= 0.3) &&
           (p.anim !== 'kick' || p.animTimer <= 0.21) &&
           (p.anim !== 'kickFinisher' || p.animTimer <= 0.28) &&
+          (p.anim !== 'jumpPunch' || p.animTimer <= 0.22) &&
           (p.anim !== 'jumpKick' || p.animTimer <= 0.28) &&
           (p.anim !== 'cane' || p.animTimer <= 0.21) &&
           (p.anim !== 'special' || p.animTimer <= 0.22);
@@ -2184,18 +2309,33 @@ export class BusBeatEmUpEngine {
         }
         if (p.animTimer <= 0) {
           const prevAnim = p.anim;
-          this.setPlayerAnim(p.z > 0 ? 'jump' : 'idle', 0);
+          const onSeatNow = Boolean(
+            this.getEmptySeatUnderPlayer(156) && Math.abs(p.z - 24) <= 2
+          );
+          const onGroundNow = p.z === 0 || onSeatNow;
+          this.setPlayerAnim(p.z > 0 && !onSeatNow ? 'jump' : 'idle', 0);
+
+          if (prevAnim === 'heavyPunch' || prevAnim === 'kickFinisher') {
+            p.comboStep = 0;
+            p.comboResetTimer = 0;
+          }
+
           if (this.bufferedAction) {
             const nextAct = this.bufferedAction;
-            this.bufferedAction = null;
-            this.executeGroundAttack(nextAct);
+            this.clearBufferedComboInput();
+            if (onGroundNow) {
+              if (nextAct === 'bagGuard') {
+                this.triggerAction('bagGuard');
+              } else {
+                this.executeGroundAttack(nextAct);
+              }
+            }
           } else if (
             (prevAnim === 'punch1' || prevAnim === 'punch2') &&
             (this.heldKeys.has('KeyJ') || this.heldKeys.has('KeyZ')) &&
-            p.z === 0
+            onGroundNow
           ) {
-            p.comboStep = 2;
-            p.comboResetTimer = 0.2;
+            p.comboResetTimer = Math.max(p.comboResetTimer, 0.25);
             this.executeGroundAttack('punch');
           }
         }
@@ -2270,7 +2410,8 @@ export class BusBeatEmUpEngine {
       if (standingOnSeat) {
         p.z = 24;
         p.vz = 0;
-        if (p.anim === 'jump' || p.anim === 'jumpKick') {
+        this.airAttackUsed = false;
+        if (p.anim === 'jump' || p.anim === 'jumpKick' || p.anim === 'jumpPunch') {
           p.animDuration = undefined;
           p.anim = Math.abs(ix) > 0.05 || Math.abs(iy) > 0.05 ? 'walk' : 'idle';
         }
@@ -2280,17 +2421,19 @@ export class BusBeatEmUpEngine {
         if (seatSupport && p.anim !== 'railSlam' && p.vz <= 0 && p.z <= 26 && p.z >= 16) {
           p.z = 24;
           p.vz = 0;
-          if (p.anim === 'jump' || p.anim === 'jumpKick') {
+          this.airAttackUsed = false;
+          if (p.anim === 'jump' || p.anim === 'jumpKick' || p.anim === 'jumpPunch') {
             p.animDuration = undefined;
             p.anim = 'idle';
           }
         } else if (p.z <= 0) {
           p.z = 0;
           p.vz = 0;
+          this.airAttackUsed = false;
           if (p.anim === 'railSlam') {
             this.resolveRailSlamImpact();
             this.setPlayerAnim('idle', 0);
-          } else if (p.anim === 'jump' || p.anim === 'jumpKick') {
+          } else if (p.anim === 'jump' || p.anim === 'jumpKick' || p.anim === 'jumpPunch') {
             p.animDuration = undefined;
             p.anim = 'idle';
           }
@@ -2333,6 +2476,7 @@ export class BusBeatEmUpEngine {
     const isKickFinisher = p.anim === 'kickFinisher';
     const isHeavyPunch = p.anim === 'heavyPunch';
     const isUppercutFinisher = p.anim === 'punch3';
+    const isJumpPunch = p.anim === 'jumpPunch';
     const isKick = p.anim === 'kick' || p.anim === 'jumpKick' || isKickFinisher;
     const isFinisher = isUppercutFinisher || isKickFinisher;
 
@@ -2359,7 +2503,9 @@ export class BusBeatEmUpEngine {
                     ? 42
                     : isKick
                       ? 40
-                      : 34;
+                      : isJumpPunch
+                        ? 34
+                        : 34;
     const laneTol = isSoundSpecial
       ? 46
       : isRailSpin
@@ -2390,7 +2536,9 @@ export class BusBeatEmUpEngine {
                     ? 15
                     : isHeadphoneWhip
                       ? 9
-                      : 10;
+                      : isJumpPunch
+                        ? 10
+                        : 10;
     const strMult = p.strengthBuffTimer > 0 ? 2 : 1;
     const rageMult = p.rageTimer > 0 ? 1.5 : 1;
     const windMult =
@@ -2654,7 +2802,7 @@ export class BusBeatEmUpEngine {
       p.attackHasHit = true;
       if (!isSpecial && !isSoundSpecial) {
         const energyGain = isFinisher || isCane || isRailSpin || isBagSpin ? 14 : 8;
-        p.specialEnergy = Math.min(100, p.specialEnergy + energyGain);
+        this.addSpecialEnergy(energyGain);
       }
       if (
         p.comboStep > 0 ||
@@ -3261,7 +3409,7 @@ export class BusBeatEmUpEngine {
 
     if (isFinalBoss && this.player.hp > 0) {
       const p = this.player;
-      this.setPlayerAnim('victory', 1.0);
+      this.setPlayerAnim(this.pickUniqueVictoryPose(), 1.0);
       p.vx = 0;
       p.vy = 0;
       p.z = 0;
@@ -3326,6 +3474,7 @@ export class BusBeatEmUpEngine {
     this.comboTintTimer = 0;
     this.comboEdgeFlashTimer = 0;
     this.comboEdgeFlashStrength = 0;
+    this.clearBufferedComboInput();
   }
 
   private damagePlayer(rawDmg: number) {
@@ -3364,6 +3513,7 @@ export class BusBeatEmUpEngine {
     this.resetComboStreak();
     p.invulnTimer = 0.42;
     p.hitFlashTimer = 0.16;
+    this.clearBufferedComboInput();
     this.setPlayerAnim('hurt', 0.22);
     audio.playHurt();
     this.triggerShake(0.16, 4);
@@ -3576,7 +3726,7 @@ export class BusBeatEmUpEngine {
       }
     } else if (kind === 'short_circuit') {
       this.shortCircuitTimer = 3.8;
-      p.specialEnergy = Math.min(100, p.specialEnergy + 25);
+      this.addSpecialEnergy(25);
       audio.playSoundWave();
       this.triggerShake(0.28, 4.5);
       for (const e of this.enemies) {
@@ -4202,7 +4352,7 @@ export class BusBeatEmUpEngine {
         break;
       case 'cafezinho':
         p.hp = Math.min(p.maxHp, p.hp + 10);
-        p.specialEnergy = Math.min(100, p.specialEnergy + 40);
+        this.addSpecialEnergy(40);
         p.speedBoostTimer = Math.max(p.speedBoostTimer, 5);
         audio.playHeal();
         break;
@@ -4264,7 +4414,30 @@ export class BusBeatEmUpEngine {
   }
 
   private handleReachExitDoor() {
+    if (this.levelClearTransition) return;
     this.heldKeys.clear();
+    this.clearBufferedComboInput();
+    const pose = this.pickUniqueVictoryPose();
+    this.setPlayerAnim(pose, 1.15);
+    this.player.vx = 0;
+    this.player.vy = 0;
+    this.player.vz = 0;
+    this.player.z = 0;
+    this.player.invulnTimer = 1.5;
+    this.spawnParticles(this.player.x, this.player.y, 26, '#facc15', 14);
+    this.spawnParticles(this.player.x, this.player.y, 22, '#34d399', 10);
+    this.spawnParticles(this.player.x, this.player.y, 24, '#38bdf8', 8);
+    if (this.currentLineIdx === BUS_LINES.length - 1) {
+      audio.playVictory(this.line.lineNumber);
+    } else {
+      audio.playValidate();
+      audio.playHeal();
+    }
+    this.levelClearTransition = { timer: 1.15, pose };
+    this.pushHudSnapshot();
+  }
+
+  private finishReachExitDoor(pose: PlayerAnimState) {
     if (!this.damageTakenThisLine) {
       this.unlockAchievement('zero_damage_line');
     }
@@ -4277,20 +4450,12 @@ export class BusBeatEmUpEngine {
         this.unlockAchievement('all_validated');
       }
       this.player.score += 1000;
-      this.setPlayerAnim('victory', 0);
-      this.player.vx = 0;
-      this.player.vy = 0;
-      this.player.vz = 0;
-      this.player.z = 0;
-      this.spawnParticles(this.player.x, this.player.y, 26, '#facc15', 14);
-      this.spawnParticles(this.player.x, this.player.y, 22, '#34d399', 10);
-      this.spawnParticles(this.player.x, this.player.y, 24, '#38bdf8', 8);
+      this.setPlayerAnim(pose, 0);
       if (!this.dailyRunCounted) {
         this.dailyRunCounted = true;
         this.trackDailyMission('complete_runs', 1);
       }
       this.gameState = 'VICTORY_SCENE';
-      audio.playVictory(this.line.lineNumber);
       this.pushHudSnapshot();
     } else {
       const willFiscalChase = !this.ticketValidated;
@@ -4392,6 +4557,7 @@ export class BusBeatEmUpEngine {
               fiscalAlert: this.fiscalChasing,
               score: this.player.score,
               purchasedPerks: Array.from(this.transitionPerksBought),
+              victoryPose: this.isVictoryAnim(this.player.anim) ? this.player.anim : 'victory',
             }
           : undefined,
     });
@@ -4822,16 +4988,49 @@ export class BusBeatEmUpEngine {
       }
     }
 
-    // 9. Floating damage / pickup texts
-    ctx.font = 'bold 7.5px sans-serif';
-    for (const ft of this.floatingTexts) {
-      const fx = ft.x - this.camX;
-      const fy = ft.y - ft.z;
-      ctx.strokeStyle = '#0f172a';
-      ctx.lineWidth = 2.6;
-      ctx.strokeText(ft.text, fx - 14, fy);
-      ctx.fillStyle = ft.color;
-      ctx.fillText(ft.text, fx - 14, fy);
+    // 9. Floating damage / pickup texts (bold 16-bit arcade impact styling)
+    if (this.floatingTexts.length > 0) {
+      ctx.save();
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.lineJoin = 'round';
+      for (const ft of this.floatingTexts) {
+        const fx = ft.x - this.camX;
+        const fy = ft.y - ft.z;
+        const prog = 1 - Math.max(0, Math.min(1, ft.life / Math.max(0.01, ft.maxLife)));
+        const popScale =
+          prog < 0.16 ? 1.48 - (prog / 0.16) * 0.42 : 1.06 - prog * 0.1;
+        const fadeAlpha = prog > 0.72 ? Math.max(0, (1 - prog) / 0.28) : 1;
+        const dmgVal = Math.abs(parseInt(ft.text, 10)) || 0;
+        const isCritOrHeavy =
+          dmgVal >= 20 || ft.color === '#fde047' || ft.color === '#38bdf8';
+        const fill =
+          ft.color === '#f8fafc'
+            ? isCritOrHeavy
+              ? '#fde047'
+              : '#fffbeb'
+            : ft.color;
+        const fontSize = isCritOrHeavy ? 10.5 : 9;
+
+        ctx.save();
+        ctx.translate(fx, fy);
+        ctx.scale(popScale, popScale);
+        ctx.globalAlpha = fadeAlpha;
+        ctx.font = `italic 900 ${fontSize}px "Bungee", "Chakra Petch", sans-serif`;
+
+        // Hard 16-bit arcade drop shadow
+        ctx.fillStyle = '#020617';
+        ctx.fillText(ft.text, 1.5, 2);
+
+        // Thick dark comic outline + vivid fill
+        ctx.strokeStyle = '#090d16';
+        ctx.lineWidth = 3.2;
+        ctx.strokeText(ft.text, 0, 0);
+        ctx.fillStyle = fill;
+        ctx.fillText(ft.text, 0, 0);
+        ctx.restore();
+      }
+      ctx.restore();
     }
 
     // 9. Animated Jetpack Joyride-style "SIGA" badge (campaign only)

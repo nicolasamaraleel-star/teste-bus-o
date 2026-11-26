@@ -106,6 +106,9 @@ export type PlayerAnimState =
   | 'hurt'
   | 'knockdown'
   | 'victory'
+  | 'victoryTie'
+  | 'victoryBadge'
+  | 'victoryCoffee'
   | 'thumbsUp';
 
 export type EnemyAIState =
@@ -377,5 +380,6 @@ export interface HudSnapshot {
     fiscalAlert: boolean;
     score: number;
     purchasedPerks: string[];
+    victoryPose?: PlayerAnimState;
   };
 }

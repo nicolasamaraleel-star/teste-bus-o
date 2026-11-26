@@ -14,15 +14,13 @@ export type ShopCategory = 'custom' | 'perk' | 'garage';
 export type GarageGender = 'male' | 'female';
 export type GarageHairStyle = 'pompadour' | 'spiky' | 'afro' | 'ponytail';
 export type GarageNeonKey = 'neon_green' | 'neon_pink' | 'neon_cyan' | 'neon_yellow';
-export type GarageSlot = 'hairColor' | 'shirtColor' | 'tieColor' | 'pantsColor' | 'backpackColor';
+export type GarageSlot = 'hairColor' | 'tieColor' | 'backpackColor';
 
 export interface GarageConfig {
   gender: GarageGender;
   hairStyle: GarageHairStyle;
   hairColor: string;
-  shirtColor: string;
   tieColor: string;
-  pantsColor: string;
   backpackColor: string;
 }
 
@@ -103,9 +101,7 @@ export const GARAGE_NEON_KEYS: GarageNeonKey[] = [
 
 export const GARAGE_FREE_COLORS: Record<GarageSlot, string[]> = {
   hairColor: ['dark_navy', 'chestnut', 'black', 'blonde', 'burgundy'],
-  shirtColor: ['white', 'sky_blue', 'charcoal', 'cream', 'black'],
   tieColor: ['crimson', 'royal_blue', 'gold', 'emerald', 'black'],
-  pantsColor: ['navy', 'black', 'khaki', 'royal_blue', 'olive'],
   backpackColor: ['royal_blue', 'crimson', 'black', 'olive', 'orange'],
 };
 
@@ -124,9 +120,7 @@ export const DEFAULT_GARAGE_CONFIG: GarageConfig = {
   gender: 'male',
   hairStyle: 'pompadour',
   hairColor: 'dark_navy',
-  shirtColor: 'white',
   tieColor: 'crimson',
-  pantsColor: 'navy',
   backpackColor: 'royal_blue',
 };
 
@@ -378,7 +372,7 @@ export const SHOP_CATALOG: ShopItemDefinition[] = [
     category: 'garage',
     name: 'Neon Verde Tóxico',
     subtitle: 'Garagem · Paleta Neon Vibrante',
-    description: 'Libera a cor neon Verde Tóxico para cabelo, camisa, gravata, calça e mochila.',
+    description: 'Libera a cor neon Verde Tóxico para cabelo, gravata e mochila.',
     price: 1000,
     unlockNeonColor: 'neon_green',
   },
@@ -387,7 +381,7 @@ export const SHOP_CATALOG: ShopItemDefinition[] = [
     category: 'garage',
     name: 'Neon Rosa Choque',
     subtitle: 'Garagem · Paleta Neon Vibrante',
-    description: 'Libera a cor neon Rosa Choque para cabelo, camisa, gravata, calça e mochila.',
+    description: 'Libera a cor neon Rosa Choque para cabelo, gravata e mochila.',
     price: 1000,
     unlockNeonColor: 'neon_pink',
   },
@@ -396,7 +390,7 @@ export const SHOP_CATALOG: ShopItemDefinition[] = [
     category: 'garage',
     name: 'Neon Ciano Elétrico',
     subtitle: 'Garagem · Paleta Neon Vibrante',
-    description: 'Libera a cor neon Ciano Elétrico para cabelo, camisa, gravata, calça e mochila.',
+    description: 'Libera a cor neon Ciano Elétrico para cabelo, gravata e mochila.',
     price: 1000,
     unlockNeonColor: 'neon_cyan',
   },
@@ -405,7 +399,7 @@ export const SHOP_CATALOG: ShopItemDefinition[] = [
     category: 'garage',
     name: 'Neon Amarelo Volt',
     subtitle: 'Garagem · Paleta Neon Vibrante',
-    description: 'Libera a cor neon Amarelo Volt para cabelo, camisa, gravata, calça e mochila.',
+    description: 'Libera a cor neon Amarelo Volt para cabelo, gravata e mochila.',
     price: 1000,
     unlockNeonColor: 'neon_yellow',
   },
@@ -468,9 +462,7 @@ export function sanitizeGarageConfig(
     gender,
     hairStyle,
     hairColor: pickColor(config?.hairColor, 'hairColor', DEFAULT_GARAGE_CONFIG.hairColor),
-    shirtColor: pickColor(config?.shirtColor, 'shirtColor', DEFAULT_GARAGE_CONFIG.shirtColor),
     tieColor: pickColor(config?.tieColor, 'tieColor', DEFAULT_GARAGE_CONFIG.tieColor),
-    pantsColor: pickColor(config?.pantsColor, 'pantsColor', DEFAULT_GARAGE_CONFIG.pantsColor),
     backpackColor: pickColor(config?.backpackColor, 'backpackColor', DEFAULT_GARAGE_CONFIG.backpackColor),
   };
 }

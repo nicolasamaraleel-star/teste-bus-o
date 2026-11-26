@@ -45,9 +45,7 @@ type PreviewPose = 'idle' | 'punch2' | 'kick';
 
 const SLOT_LABELS: Array<{ key: GarageSlot; label: string }> = [
   { key: 'hairColor', label: 'Cabelo' },
-  { key: 'shirtColor', label: 'Camisa' },
   { key: 'tieColor', label: 'Gravata' },
-  { key: 'pantsColor', label: 'Calça' },
   { key: 'backpackColor', label: 'Mochila' },
 ];
 
@@ -426,9 +424,7 @@ export function ShopModal({
       gender: pick(unlockedGenders),
       hairStyle: pick(unlockedHairs),
       hairColor: pickSlotColor('hairColor'),
-      shirtColor: pickSlotColor('shirtColor'),
       tieColor: pickSlotColor('tieColor'),
-      pantsColor: pickSlotColor('pantsColor'),
       backpackColor: pickSlotColor('backpackColor'),
     });
     audio.playPickup();

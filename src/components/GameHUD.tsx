@@ -69,7 +69,7 @@ function EstagiarioPortrait({
   const customCfg = skin === 'custom' ? (garageConfig ?? DEFAULT_GARAGE_CONFIG) : null;
   const p = customCfg
     ? {
-        shirt: getGarageSwatchDef(customCfg.shirtColor, 'white').main,
+        shirt: '#f8fafc',
         tie: getGarageSwatchDef(customCfg.tieColor, 'crimson').main,
         hair: getGarageSwatchDef(customCfg.hairColor, 'dark_navy').main,
         bg: '#1e3a5f',

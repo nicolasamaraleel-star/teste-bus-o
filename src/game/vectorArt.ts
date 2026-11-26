@@ -774,7 +774,13 @@ export function drawVectorPlayer(
     });
   }
 
-  if (anim === 'victory') {
+  const isVictoryPose =
+    anim === 'victory' ||
+    anim === 'victoryTie' ||
+    anim === 'victoryBadge' ||
+    anim === 'victoryCoffee';
+
+  if (isVictoryPose) {
     // Golden 16-bit victory floor podium/spotlight highlight under player
     const pulse = Math.floor(auraClock * 5) % 2;
     ctx.fillStyle = pulse === 0 ? 'rgba(250, 204, 21, 0.36)' : 'rgba(52, 211, 153, 0.34)';
@@ -813,6 +819,17 @@ export function drawVectorPlayer(
   } else if (anim === 'victory') {
     bodyDy = idleFrame === 1 ? -1 : 0;
     leanAngle = -0.04;
+  } else if (anim === 'victoryTie') {
+    bodyDx = -1;
+    bodyDy = idleFrame === 1 ? 0.5 : 0;
+    leanAngle = -0.08;
+  } else if (anim === 'victoryBadge') {
+    bodyDx = 1;
+    bodyDy = idleFrame === 1 ? 1.5 : 0.5;
+    leanAngle = 0.05;
+  } else if (anim === 'victoryCoffee') {
+    bodyDy = idleFrame === 1 ? -0.5 : 0.5;
+    leanAngle = -0.03;
   } else if (anim === 'walk') {
     const walkBobTable = [1, 1.8, 0.2, -1, 1, 1.8, 0.2, -1];
     const walkLeanTable = [0.06, 0.075, 0.045, 0.05, 0.06, 0.075, 0.045, 0.05];
@@ -1342,24 +1359,10 @@ export function drawVectorPlayer(
     if (!customCfg) {
       return skinPalette[skinStyle === 'custom' ? 'classic' : skinStyle] ?? skinPalette.classic;
     }
-    const shirt = getGarageSwatchDef(customCfg.shirtColor, 'white');
     const tie = getGarageSwatchDef(customCfg.tieColor, 'crimson');
-    const pants = getGarageSwatchDef(customCfg.pantsColor, 'navy');
     const bag = getGarageSwatchDef(customCfg.backpackColor, 'royal_blue');
     return {
-      shirtBase: shirt.main,
-      shirtShadow: shirt.dark,
-      shirtHi: shirt.highlight,
-      sleeveMain: shirt.main,
-      sleeveShadow: shirt.dark,
-      pantsUpperRear: pants.dark,
-      pantsUpperRearDark: '#090d16',
-      pantsLowerRear: pants.main,
-      pantsLowerRearDark: pants.dark,
-      pantsUpperFront: pants.main,
-      pantsUpperFrontDark: pants.dark,
-      pantsLowerFront: pants.highlight,
-      pantsLowerFrontDark: pants.main,
+      ...skinPalette.classic,
       shoeBase: '#f1f5f9',
       shoeAccent: tie.main,
       shoeSole: '#334155',
@@ -1785,6 +1788,33 @@ export function drawVectorPlayer(
     pxLimb(ctx, bodyDx + 2, hipY, 7, -9, 6, pal.pantsUpperFront, pal.pantsUpperFrontDark);
     pxLimb(ctx, 7, -9, 8, -2, 5.5, pal.pantsLowerFront, pal.pantsLowerFrontDark);
     drawShoe(9, -2);
+  } else if (anim === 'victoryTie') {
+    // Relaxed casual swagger stance leaning slightly on rear heel
+    pxLimb(ctx, bodyDx - 2, hipY, -9, -8, 6, pal.pantsUpperRear, pal.pantsUpperRearDark);
+    pxLimb(ctx, -9, -8, -10, -2, 5.5, pal.pantsLowerRear, pal.pantsLowerRearDark);
+    drawShoe(-10, -2);
+
+    pxLimb(ctx, bodyDx + 2, hipY, 6, -9, 6, pal.pantsUpperFront, pal.pantsUpperFrontDark);
+    pxLimb(ctx, 6, -9, 7, -2, 5.5, pal.pantsLowerFront, pal.pantsLowerFrontDark);
+    drawShoe(8, -2);
+  } else if (anim === 'victoryBadge') {
+    // Wide heroic power-stance showing off the corporate badge trophy
+    pxLimb(ctx, bodyDx - 3, hipY, -10, -8, 6, pal.pantsUpperRear, pal.pantsUpperRearDark);
+    pxLimb(ctx, -10, -8, -11, -2, 5.5, pal.pantsLowerRear, pal.pantsLowerRearDark);
+    drawShoe(-11, -2);
+
+    pxLimb(ctx, bodyDx + 3, hipY, 10, -8, 6, pal.pantsUpperFront, pal.pantsUpperFrontDark);
+    pxLimb(ctx, 10, -8, 11, -2, 5.5, pal.pantsLowerFront, pal.pantsLowerFrontDark);
+    drawShoe(12, -2);
+  } else if (anim === 'victoryCoffee') {
+    // Weight on back leg, front foot casually propped forward on heel
+    pxLimb(ctx, bodyDx - 2, hipY, -5, -9, 6, pal.pantsUpperRear, pal.pantsUpperRearDark);
+    pxLimb(ctx, -5, -9, -6, -2, 5.5, pal.pantsLowerRear, pal.pantsLowerRearDark);
+    drawShoe(-6, -2);
+
+    pxLimb(ctx, bodyDx + 2, hipY, 9, -9, 6, pal.pantsUpperFront, pal.pantsUpperFrontDark);
+    pxLimb(ctx, 9, -9, 12, -3, 5.5, pal.pantsLowerFront, pal.pantsLowerFrontDark);
+    drawShoe(13, -3);
   } else if (anim === 'fightStance') {
     const stanceBob = Math.sin(auraClock * 9.5) > 0 ? 1 : 0;
     pxLimb(ctx, bodyDx - 2, hipY, -9, -8, 5.8, pal.pantsUpperRear, pal.pantsUpperRearDark);
@@ -2440,21 +2470,51 @@ export function drawVectorPlayer(
     pxRect(ctx, bodyDx, headY + 3, 7, 3, pal.visorColor, '#090d16', 0.9);
     ctx.fillStyle = '#ecfeff';
     ctx.fillRect(bodyDx + 2, headY + 4, 3, 1);
-  } else if (anim === 'thumbsUp') {
-    pxRect(ctx, bodyDx + 1.5, headY + 4, 3.2, 2.2, '#ffffff');
-    pxRect(ctx, bodyDx + 3.4, headY + 4.2, 1.5, 1.8, '#090d16');
-    ctx.strokeStyle = '#090d16';
-    ctx.lineWidth = 1.1;
-    ctx.beginPath();
-    ctx.moveTo(bodyDx + 0.8, headY + 2.8);
-    ctx.lineTo(bodyDx + 5.2, headY + 2.3);
-    ctx.stroke();
+  } else if (anim === 'thumbsUp' || isVictoryPose) {
+    if (anim === 'victoryCoffee') {
+      // Cheerful wink / relaxed eye enjoying the coffee break
+      ctx.strokeStyle = '#090d16';
+      ctx.lineWidth = 1.3;
+      ctx.beginPath();
+      ctx.moveTo(bodyDx + 1.2, headY + 4.8);
+      ctx.quadraticCurveTo(bodyDx + 3.2, headY + 3.2, bodyDx + 5.0, headY + 4.8);
+      ctx.stroke();
+    } else if (anim === 'victoryTie') {
+      // Cool half-lidded confident gaze
+      pxRect(ctx, bodyDx + 1.5, headY + 4.3, 3.2, 1.8, '#ffffff');
+      pxRect(ctx, bodyDx + 3.4, headY + 4.4, 1.4, 1.5, '#090d16');
+      ctx.strokeStyle = '#090d16';
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.moveTo(bodyDx + 0.8, headY + 3.7);
+      ctx.lineTo(bodyDx + 5.2, headY + 3.9);
+      ctx.stroke();
+    } else {
+      pxRect(ctx, bodyDx + 1.5, headY + 4, 3.2, 2.2, '#ffffff');
+      pxRect(ctx, bodyDx + 3.4, headY + 4.2, 1.5, 1.8, '#090d16');
+      ctx.strokeStyle = '#090d16';
+      ctx.lineWidth = 1.1;
+      ctx.beginPath();
+      ctx.moveTo(bodyDx + 0.8, headY + 2.8);
+      ctx.lineTo(bodyDx + 5.2, headY + 2.3);
+      ctx.stroke();
+    }
     if (isFemale) {
       ctx.fillStyle = '#090d16';
       ctx.fillRect(bodyDx + 1, headY + 3.5, 1, 1);
     }
     if (!pal.ninjaHeadTie) {
-      pxRect(ctx, bodyDx + 1, headY + 7.2, 4, 2, '#ffffff', '#090d16', 0.7);
+      if (anim === 'victoryTie' || anim === 'victoryCoffee') {
+        // Confident smirk
+        ctx.strokeStyle = '#090d16';
+        ctx.lineWidth = 1.1;
+        ctx.beginPath();
+        ctx.moveTo(bodyDx + 1.4, headY + 8.1);
+        ctx.quadraticCurveTo(bodyDx + 3.4, headY + 8.6, bodyDx + 5.0, headY + 7.2);
+        ctx.stroke();
+      } else {
+        pxRect(ctx, bodyDx + 1, headY + 7.2, 4, 2, '#ffffff', '#090d16', 0.7);
+      }
     }
   } else if (hasRageBuff) {
     pxRect(ctx, bodyDx + 1.5, headY + 4, 3.2, 2.2, '#ffffff');
@@ -2886,6 +2946,85 @@ export function drawVectorPlayer(
     ctx.fillRect(glintX - glintSize, glintY - 1, glintSize * 2, 2);
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(glintX - 1, glintY - 1, 2, 2);
+  } else if (anim === 'victoryTie') {
+    // Left arm confident on hip
+    pxLimb(ctx, bodyDx - 3, torsoTopY + 4, bodyDx - 8, torsoTopY + 11, 4.5, pal.sleeveShadow, '#475569');
+    pxLimb(ctx, bodyDx - 8, torsoTopY + 11, bodyDx - 5, hipY - 1, 4.2, '#e5a97c', '#b46e42');
+
+    // Right arm bent gracefully across chest straightening tie/collar ("Nem suou!")
+    const adjustPulse = Math.floor(auraClock * 4.5) % 2 === 0 ? 0 : 0.8;
+    pxLimb(ctx, bodyDx + 3, torsoTopY + 4, bodyDx + 10, torsoTopY + 7, 4.6, pal.sleeveMain, pal.sleeveShadow);
+    celRolledCuff(ctx, bodyDx + 9.5, torsoTopY + 6.5, -0.5, 4.6, pal.sleeveMain, pal.sleeveShadow);
+    pxLimb(ctx, bodyDx + 9.5, torsoTopY + 6.5, bodyDx + 3.8, torsoTopY + 3.2 - adjustPulse, 4.2, skinTone, skinShade);
+    pxRect(ctx, bodyDx + 1.5, torsoTopY + 1.5 - adjustPulse, 4.5, 4, skinTone, '#090d16', 1.0);
+
+    // Crisp golden "bling" glint right off the tie knot / collar
+    const bx = px(bodyDx + 2);
+    const by = px(torsoTopY - 2);
+    const bs = Math.floor(auraClock * 6) % 2 === 0 ? 4 : 2;
+    ctx.fillStyle = '#fde047';
+    ctx.fillRect(bx - 0.8, by - bs, 1.6, bs * 2);
+    ctx.fillRect(bx - bs, by - 0.8, bs * 2, 1.6);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(bx - 0.6, by - 0.6, 1.2, 1.2);
+  } else if (anim === 'victoryBadge') {
+    // Left arm fist on hip
+    pxLimb(ctx, bodyDx - 3, torsoTopY + 4, bodyDx - 9, torsoTopY + 11, 4.5, pal.sleeveShadow, '#475569');
+    pxLimb(ctx, bodyDx - 9, torsoTopY + 11, bodyDx - 5, hipY - 1, 4.2, '#e5a97c', '#b46e42');
+
+    // Right arm thrust diagonally forward holding corporate ID badge ("Ponto Garantido!")
+    pxLimb(ctx, bodyDx + 3, torsoTopY + 4, bodyDx + 10, torsoTopY - 1, 4.6, pal.sleeveMain, pal.sleeveShadow);
+    celRolledCuff(ctx, bodyDx + 10, torsoTopY - 1, -0.35, 4.6, pal.sleeveMain, pal.sleeveShadow);
+    pxLimb(ctx, bodyDx + 10, torsoTopY - 1, bodyDx + 14, headY - 5, 4.3, skinTone, skinShade);
+    pxRect(ctx, bodyDx + 12, headY - 8, 5, 5, skinTone, '#090d16', 1.0);
+
+    // Enlarged 16-bit ID badge held proudly aloft with lanyard strap
+    ctx.strokeStyle = '#38bdf8';
+    ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    ctx.moveTo(bodyDx + 14.5, headY - 8);
+    ctx.lineTo(bodyDx + 15.5, headY - 13);
+    ctx.stroke();
+    pxRect(ctx, bodyDx + 11.5, headY - 21, 8.5, 10, '#f8fafc', '#090d16', 1.2);
+    ctx.fillStyle = '#f97316';
+    ctx.fillRect(bodyDx + 13, headY - 19, 3.5, 3.5);
+    ctx.fillStyle = '#10b981';
+    ctx.fillRect(bodyDx + 13, headY - 14, 5.5, 1.6);
+
+    const sx = px(bodyDx + 20);
+    const sy = px(headY - 22);
+    const ss = Math.floor(auraClock * 7) % 2 === 0 ? 4 : 2;
+    ctx.fillStyle = '#38bdf8';
+    ctx.fillRect(sx - 0.8, sy - ss, 1.6, ss * 2);
+    ctx.fillRect(sx - ss, sy - 0.8, ss * 2, 1.6);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(sx - 0.6, sy - 0.6, 1.2, 1.2);
+  } else if (anim === 'victoryCoffee') {
+    // Left arm resting casually on hip
+    pxLimb(ctx, bodyDx - 3, torsoTopY + 4, bodyDx - 8, torsoTopY + 11, 4.5, pal.sleeveShadow, '#475569');
+    pxLimb(ctx, bodyDx - 8, torsoTopY + 11, bodyDx - 5, hipY - 1, 4.2, '#e5a97c', '#b46e42');
+
+    // Right arm raising a steaming 16-bit coffee cup in a victory toast!
+    const sipLift = idleFrame === 1 ? -1 : 0;
+    pxLimb(ctx, bodyDx + 3, torsoTopY + 4, bodyDx + 10, torsoTopY + 5, 4.6, pal.sleeveMain, pal.sleeveShadow);
+    celRolledCuff(ctx, bodyDx + 10, torsoTopY + 5, -0.25, 4.6, pal.sleeveMain, pal.sleeveShadow);
+    pxLimb(ctx, bodyDx + 10, torsoTopY + 5, bodyDx + 14, torsoTopY + sipLift, 4.3, skinTone, skinShade);
+    pxRect(ctx, bodyDx + 12, torsoTopY - 2 + sipLift, 5, 4.5, skinTone, '#090d16', 1.0);
+
+    // 16-bit coffee cup with brown sleeve + hot coffee top
+    const cupX = bodyDx + 13;
+    const cupY = torsoTopY - 9 + sipLift;
+    pxRect(ctx, cupX, cupY, 7, 8, '#f8fafc', '#090d16', 1.1);
+    ctx.fillStyle = '#92400e';
+    ctx.fillRect(cupX + 1, cupY + 3, 5, 3);
+    ctx.fillStyle = '#451a03';
+    ctx.fillRect(cupX + 1, cupY + 0.5, 5, 1.5);
+
+    // Rising animated pixel steam wisps
+    const steamTick = Math.floor(auraClock * 6) % 2;
+    ctx.fillStyle = 'rgba(248, 250, 252, 0.9)';
+    ctx.fillRect(px(cupX + 1.5 + steamTick), px(cupY - 4), 1.5, 2.5);
+    ctx.fillRect(px(cupX + 4.5 - steamTick), px(cupY - 7), 1.5, 2.5);
   } else if (anim === 'fightStance') {
     const fBob = Math.sin(auraClock * 9.5) > 0 ? 1 : -1;
     pxLimb(ctx, bodyDx + 2, torsoTopY + 4, bodyDx + 7, torsoTopY + 6 + fBob, 4.8, pal.sleeveMain, pal.sleeveShadow);
@@ -6466,14 +6605,10 @@ export function drawPauseSleepingCanvas(
   const customCfg = skinStyle === 'custom' ? (garageConfig ?? DEFAULT_GARAGE_CONFIG) : null;
   const pal: (typeof skinMap)['classic'] = customCfg
     ? {
-        shirt: getGarageSwatchDef(customCfg.shirtColor, 'white').main,
-        shirtSh: getGarageSwatchDef(customCfg.shirtColor, 'white').dark,
-        hi: getGarageSwatchDef(customCfg.shirtColor, 'white').highlight,
+        ...skinMap.classic,
         tie: getGarageSwatchDef(customCfg.tieColor, 'crimson').main,
         bag: getGarageSwatchDef(customCfg.backpackColor, 'royal_blue').main,
         bagSh: getGarageSwatchDef(customCfg.backpackColor, 'royal_blue').dark,
-        pants1: getGarageSwatchDef(customCfg.pantsColor, 'navy').dark,
-        pants2: getGarageSwatchDef(customCfg.pantsColor, 'navy').main,
       }
     : skinMap[skinStyle === 'custom' ? 'classic' : skinStyle];
   const hairSwatch = customCfg
@@ -6711,9 +6846,7 @@ export function drawGameOverCryingCanvas(
   const customCfg = skinStyle === 'custom' ? (garageConfig ?? DEFAULT_GARAGE_CONFIG) : null;
   const pal: (typeof skinColors)['classic'] = customCfg
     ? {
-        shirt: getGarageSwatchDef(customCfg.shirtColor, 'white').main,
-        shirtSh: getGarageSwatchDef(customCfg.shirtColor, 'white').dark,
-        pants: getGarageSwatchDef(customCfg.pantsColor, 'navy').main,
+        ...skinColors.classic,
         tie: getGarageSwatchDef(customCfg.tieColor, 'crimson').main,
         bag: getGarageSwatchDef(customCfg.backpackColor, 'royal_blue').main,
       }

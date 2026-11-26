@@ -125,6 +125,8 @@ function GameOverCryingCanvas({
   );
 }
 
+const VICTORY_POSES = ['victory', 'victoryTie', 'victoryBadge', 'victoryCoffee'] as const;
+
 function VictoryStandPodium({
   lineNumber,
   score,
@@ -137,6 +139,7 @@ function VictoryStandPodium({
   garageConfig?: GarageConfig;
 }) {
   const standCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [poseOffset, setPoseOffset] = useState(0);
 
   useEffect(() => {
     const canvas = standCanvasRef.current;
@@ -202,14 +205,17 @@ function VictoryStandPodium({
         ctx.fillRect(cx, cy, 2, 2);
       }
 
-      // Heroic player sprite in 'victory' stand pose atop the podium
+      const activePose =
+        VICTORY_POSES[(Math.floor(t / 2.2) + poseOffset + Math.max(0, lineNumber - 1)) % VICTORY_POSES.length];
+
+      // Heroic player sprite cycling unique 16-bit victory poses atop the podium
       drawVectorPlayer(
         ctx,
         60,
         podY - 1,
         0,
         1,
-        'victory',
+        activePose,
         t,
         false,
         false,
@@ -226,7 +232,7 @@ function VictoryStandPodium({
 
     rafId = requestAnimationFrame(drawStand);
     return () => cancelAnimationFrame(rafId);
-  }, [lineNumber, skinStyle, garageConfig]);
+  }, [lineNumber, skinStyle, garageConfig, poseOffset]);
 
   const title =
     lineNumber === 3
@@ -241,8 +247,10 @@ function VictoryStandPodium({
         ref={standCanvasRef}
         width={120}
         height={98}
+        onClick={() => setPoseOffset((prev) => (prev + 1) % VICTORY_POSES.length)}
+        title="Clique para trocar a pose de vitória"
         style={{ imageRendering: 'pixelated' }}
-        className="w-[104px] h-[85px] shrink-0 rounded-lg border-2 border-[#020617] bg-[#090d16]"
+        className="w-[104px] h-[85px] shrink-0 rounded-lg border-2 border-[#020617] bg-[#090d16] cursor-pointer"
       />
       <div className="flex-1 min-w-0 space-y-1.5">
         <div className="text-[11px] font-bold text-[#facc15] tracking-wide">
