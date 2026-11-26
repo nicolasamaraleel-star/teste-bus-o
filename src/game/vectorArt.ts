@@ -6,7 +6,14 @@ import {
   getGarageSwatchDef,
   PlayerSkinStyle,
 } from './shop';
-import { BossFinisherKind, EnemyType, ItemType, LineDefinition, Particle } from './types';
+import {
+  BossFinisherKind,
+  EnemyType,
+  ImpactFlashKind,
+  ItemType,
+  LineDefinition,
+  Particle,
+} from './types';
 
 // ============================================================================
 // 16-BIT PIXEL ART & BAYER DITHERING UTILITIES
@@ -518,51 +525,140 @@ export function drawImpactFlash(
   x: number,
   y: number,
   progress: number,
-  strong = false
+  strong = false,
+  options?: {
+    kind?: ImpactFlashKind;
+    dir?: 1 | -1;
+  }
 ) {
   const cx = px(x);
   const cy = px(y);
-  const scale = strong ? 1.42 : 1.05;
-  const shrink = progress < 0.28 ? 0.72 + (progress / 0.28) * 0.42 : Math.max(0.22, 1.14 - progress * 0.96);
+  const kind: ImpactFlashKind = options?.kind ?? (strong ? 'heavy' : 'jab');
+  const dir: 1 | -1 = options?.dir ?? 1;
+  const p = Math.max(0, Math.min(1, progress));
+  const fade = p < 0.65 ? 1 : Math.max(0.08, 1 - (p - 0.65) / 0.35);
+
+  if (kind === 'blocked') {
+    const shrink = p < 0.25 ? 0.72 + (p / 0.25) * 0.38 : Math.max(0.2, 1.1 - p * 0.92);
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.scale(dir * shrink, shrink);
+    ctx.globalAlpha = fade * 0.92;
+
+    // Cool steel-cyan guard deflection chevron & diamond shield flash
+    ctx.strokeStyle = '#38bdf8';
+    ctx.lineWidth = 2.0;
+    ctx.beginPath();
+    ctx.arc(0, 0, 9.5 + p * 4, -1.05, 1.05);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(0, -10);
+    ctx.lineTo(7, 0);
+    ctx.lineTo(0, 10);
+    ctx.lineTo(-5, 0);
+    ctx.closePath();
+    ctx.fillStyle = '#bae6fd';
+    ctx.fill();
+    ctx.strokeStyle = '#0284c7';
+    ctx.lineWidth = 1.2;
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(0, -5.5);
+    ctx.lineTo(4, 0);
+    ctx.lineTo(0, 5.5);
+    ctx.lineTo(-3, 0);
+    ctx.closePath();
+    ctx.fillStyle = '#ffffff';
+    ctx.fill();
+    ctx.restore();
+    return;
+  }
+
+  const baseScale =
+    kind === 'finisher'
+      ? 1.48
+      : kind === 'heavy'
+        ? 1.32
+        : kind === 'uppercut'
+          ? 1.24
+          : kind === 'kick'
+            ? 1.16
+            : 0.96;
+  const shrink =
+    p < 0.24 ? 0.74 + (p / 0.24) * 0.42 : Math.max(0.18, 1.16 - p * 0.98);
 
   ctx.save();
   ctx.translate(cx, cy);
-  ctx.scale(scale * shrink, scale * shrink);
+  if (kind === 'uppercut') {
+    ctx.scale(dir * baseScale * shrink * 0.92, baseScale * shrink * 1.22);
+  } else {
+    ctx.scale(dir * baseScale * shrink, baseScale * shrink);
+  }
+  ctx.globalAlpha = fade;
 
-  // Outer radiating golden-orange speed spikes (arcade impact streak lines)
-  const streakAngles = [-2.55, -1.9, -0.95, 0.25, 1.15, 2.25];
-  ctx.strokeStyle = '#f97316';
-  ctx.lineWidth = 1.4;
+  // Finisher outer crisp shock ring
+  if (kind === 'finisher') {
+    ctx.strokeStyle = 'rgba(250, 204, 21, 0.85)';
+    ctx.lineWidth = Math.max(1, 2.2 * (1 - p * 0.7));
+    ctx.beginPath();
+    ctx.arc(0, 0, 12 + p * 12, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  // Kick slash arc highlight along contact vector
+  if (kind === 'kick' || kind === 'finisher') {
+    ctx.strokeStyle = kind === 'finisher' ? '#fb923c' : '#7dd3fc';
+    ctx.lineWidth = kind === 'finisher' ? 2.2 : 1.8;
+    ctx.beginPath();
+    ctx.arc(-4, 1, 16, -0.82, 0.72);
+    ctx.stroke();
+  }
+
+  // Directional speed spikes tailored per attack family
+  const streakAngles =
+    kind === 'uppercut'
+      ? [-2.15, -1.7, -1.25, -0.85, 0.4, 2.55]
+      : kind === 'kick'
+        ? [-0.9, -0.35, 0.15, 0.65, -2.55, 2.4]
+        : [-2.45, -1.65, -0.65, 0.18, 0.95, 2.2];
+  ctx.strokeStyle =
+    kind === 'uppercut'
+      ? '#38bdf8'
+      : kind === 'finisher'
+        ? '#ef4444'
+        : '#f97316';
+  ctx.lineWidth = kind === 'jab' ? 1.2 : 1.5;
   for (let i = 0; i < streakAngles.length; i++) {
-    const a = streakAngles[i] + (strong ? 0.14 : 0);
-    const r0 = 9;
-    const r1 = i % 2 === 0 ? 22 : 17;
+    const a = streakAngles[i];
+    const r0 = kind === 'jab' ? 7.5 : 9;
+    const r1 = i % 2 === 0 ? (kind === 'jab' ? 16.5 : 22) : kind === 'jab' ? 13 : 17.5;
     ctx.beginPath();
     ctx.moveTo(Math.cos(a) * r0, Math.sin(a) * r0);
     ctx.lineTo(Math.cos(a) * r1, Math.sin(a) * r1);
     ctx.stroke();
   }
 
-  // Sharp asymmetrical outer starburst (amber-orange rim -> bright yellow fill)
-  const rays = 14;
+  // Asymmetrical outer starburst (directional stretch on punches & kicks)
+  const rays = kind === 'finisher' ? 16 : kind === 'jab' ? 10 : 14;
   ctx.beginPath();
   for (let i = 0; i < rays; i++) {
-    const a = (i * Math.PI * 2) / rays + (strong ? 0.18 : 0.06);
+    const a = (i * Math.PI * 2) / rays + (kind === 'heavy' ? 0.16 : 0.06);
+    const forwardBias = Math.cos(a) > 0.35 && kind !== 'uppercut' ? 1.18 : 1;
+    const upBias = Math.sin(a) < -0.35 && kind === 'uppercut' ? 1.24 : 1;
     const r =
-      i % 2 === 0
-        ? i % 4 === 0
-          ? 18
-          : 13.5
-        : 4.2;
+      (i % 2 === 0 ? (i % 4 === 0 ? 17.5 : 13) : 4.1) * forwardBias * upBias;
     const pxp = Math.cos(a) * r;
     const pyp = Math.sin(a) * r;
     if (i === 0) ctx.moveTo(pxp, pyp);
     else ctx.lineTo(pxp, pyp);
   }
   ctx.closePath();
-  ctx.fillStyle = '#facc15';
+  ctx.fillStyle = kind === 'uppercut' ? '#fde047' : '#facc15';
   ctx.fill();
-  ctx.strokeStyle = '#ea580c';
+  ctx.strokeStyle =
+    kind === 'finisher' ? '#dc2626' : kind === 'uppercut' ? '#0284c7' : '#ea580c';
   ctx.lineWidth = 1.1;
   ctx.stroke();
 
@@ -570,7 +666,7 @@ export function drawImpactFlash(
   ctx.beginPath();
   for (let i = 0; i < 12; i++) {
     const a = (i * Math.PI * 2) / 12 + 0.12;
-    const r = i % 2 === 0 ? 11.5 : 3.2;
+    const r = i % 2 === 0 ? 11 : 3.1;
     const pxp = Math.cos(a) * r;
     const pyp = Math.sin(a) * r;
     if (i === 0) ctx.moveTo(pxp, pyp);
@@ -584,7 +680,7 @@ export function drawImpactFlash(
   ctx.beginPath();
   for (let i = 0; i < 10; i++) {
     const a = (i * Math.PI * 2) / 10;
-    const r = i % 2 === 0 ? 6.8 : 2.1;
+    const r = i % 2 === 0 ? 6.5 : 2.0;
     const pxp = Math.cos(a) * r;
     const pyp = Math.sin(a) * r;
     if (i === 0) ctx.moveTo(pxp, pyp);
@@ -597,9 +693,61 @@ export function drawImpactFlash(
   ctx.restore();
 }
 
+export function drawGroundShockwave(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  progress: number,
+  color: string,
+  strong: boolean,
+  maxRadius: number,
+  reducedMotion = false
+) {
+  const p = Math.max(0, Math.min(1, progress));
+  const ease = 1 - Math.pow(1 - p, 2);
+  const rx = Math.max(6, (reducedMotion ? 0.65 : ease) * maxRadius);
+  const ry = rx * 0.34;
+  const alpha = (1 - p) * (reducedMotion ? 0.38 : strong ? 0.72 : 0.56);
+  if (alpha <= 0.02) return;
+
+  const cx = px(x);
+  const cy = px(y);
+
+  ctx.save();
+  // Crisp outer 16-bit elliptical shock ring on the floor plane
+  ctx.globalAlpha = alpha;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = strong ? Math.max(1.2, 2.6 * (1 - p * 0.65)) : Math.max(1, 2.0 * (1 - p * 0.65));
+  ctx.beginPath();
+  ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+  ctx.stroke();
+
+  // Subtle white-hot inner floor ripple during early impact frames
+  if (p < 0.62) {
+    ctx.globalAlpha = (1 - p / 0.62) * (reducedMotion ? 0.3 : 0.6);
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, rx * 0.68, ry * 0.68, 0, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  // 4 compact outward floor dust ticks so ground contact reads cleanly without blocking sprites
+  if (!reducedMotion) {
+    const tickAlpha = (1 - p) * 0.68;
+    ctx.globalAlpha = tickAlpha;
+    ctx.fillStyle = color;
+    ctx.fillRect(px(cx - rx - 1), cy - 1, 2, 1.5);
+    ctx.fillRect(px(cx + rx - 1), cy - 1, 2, 1.5);
+    ctx.fillRect(cx - 1, px(cy - ry - 1), 2, 1.5);
+    ctx.fillRect(cx - 1, px(cy + ry), 2, 1.5);
+  }
+  ctx.restore();
+}
+
 /**
  * Renders 16-bit pixel-aligned hit particles, including stepped metallic sparks
- * with white-hot -> metallic -> ember cooling palettes and tumbling shards.
+ * with white-hot -> metallic -> ember cooling palettes, stylized kick trails, and tumbling shards.
  */
 export function drawPixelParticle(
   ctx: CanvasRenderingContext2D,
@@ -612,35 +760,73 @@ export function drawPixelParticle(
   const lifeRatio = Math.max(0, Math.min(1, pt.life / maxLife));
   const age = 1 - lifeRatio;
 
-  if (pt.kind === 'spark') {
-    // Discrete 16-bit palette cooling: white-hot core -> primary metallic -> cooled slag
-    const cool = pt.coolColor ?? '#f97316';
-    const headColor = age < 0.36 ? '#ffffff' : age < 0.74 ? pt.color : cool;
-    const midColor = age < 0.28 ? pt.color : cool;
-    const tailColor = cool;
-
-    const ox = pt.prevX !== undefined ? px(pt.prevX - camX) : px(pt.x - pt.vx * 0.022 - camX);
+  if (pt.kind === 'kickTrail') {
+    const ox = pt.prevX !== undefined ? px(pt.prevX - camX) : px(pt.x - pt.vx * 0.028 - camX);
     const oy =
       pt.prevY !== undefined && pt.prevZ !== undefined
         ? px(pt.prevY - pt.prevZ)
-        : px(pt.y - pt.z + pt.vz * 0.022);
+        : px(pt.y - pt.z + pt.vz * 0.028);
+    const dx = sx - ox;
+    const dy = sy - oy;
+    const midX = px(ox + dx * 0.55);
+    const midY = px(oy + dy * 0.55);
+    const cool = pt.coolColor ?? '#f97316';
+
+    ctx.save();
+    ctx.globalAlpha = Math.max(0.15, lifeRatio * 0.92);
+    ctx.strokeStyle = cool;
+    ctx.lineWidth = pt.size >= 2.8 ? 2.4 : 1.8;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(ox, oy);
+    ctx.lineTo(midX, midY);
+    ctx.stroke();
+
+    ctx.strokeStyle = pt.color;
+    ctx.lineWidth = pt.size >= 2.8 ? 1.8 : 1.4;
+    ctx.beginPath();
+    ctx.moveTo(midX, midY);
+    ctx.lineTo(sx, sy);
+    ctx.stroke();
+
+    if (age < 0.45) {
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(sx - 1, sy - 1, 2, 2);
+    }
+    ctx.restore();
+    return;
+  }
+
+  if (pt.kind === 'spark') {
+    // Discrete 16-bit palette cooling: white-hot core -> primary metallic -> cooled slag
+    const cool = pt.coolColor ?? '#f97316';
+    const headColor = age < 0.34 ? '#ffffff' : age < 0.72 ? pt.color : cool;
+    const midColor = age < 0.28 ? pt.color : cool;
+    const tailColor = cool;
+
+    const ox = pt.prevX !== undefined ? px(pt.prevX - camX) : px(pt.x - pt.vx * 0.024 - camX);
+    const oy =
+      pt.prevY !== undefined && pt.prevZ !== undefined
+        ? px(pt.prevY - pt.prevZ)
+        : px(pt.y - pt.z + pt.vz * 0.024);
 
     const dx = sx - ox;
     const dy = sy - oy;
     const dist = Math.hypot(dx, dy);
 
-    if (dist >= 1.5) {
-      const steps = Math.min(4, Math.max(2, Math.round(dist * 0.75)));
+    if (dist >= 1.4) {
+      const steps = Math.min(5, Math.max(2, Math.round(dist * 0.8)));
       for (let i = 0; i < steps; i++) {
         const f = i / steps;
         const tx = px(ox + dx * f);
         const ty = px(oy + dy * f);
-        ctx.fillStyle = i === 0 ? tailColor : midColor;
-        ctx.fillRect(tx, ty, 1, 1);
+        ctx.fillStyle = i <= 1 ? tailColor : midColor;
+        const segSize = i >= steps - 1 && pt.size >= 2.8 && age < 0.45 ? 2 : 1;
+        ctx.fillRect(tx, ty, segSize, segSize);
       }
     }
 
-    const headSize = pt.size >= 2.8 && age < 0.55 ? 2 : 1;
+    const headSize = pt.size >= 2.7 && age < 0.55 ? 2 : 1;
     ctx.fillStyle = headColor;
     ctx.fillRect(sx, sy, headSize, headSize);
 
@@ -673,9 +859,10 @@ export function drawPixelParticle(
     return;
   }
 
-  // Standard crisp pixel square
+  // Standard crisp pixel square with subtle dissipation shrink near end of life
   ctx.fillStyle = pt.color;
-  const sz = Math.max(2, Math.round(pt.size * 0.85));
+  const lifeShrink = lifeRatio < 0.3 ? 0.65 : 0.85;
+  const sz = Math.max(1, Math.round(pt.size * lifeShrink));
   ctx.fillRect(sx, sy, sz, sz);
 }
 
@@ -699,7 +886,13 @@ export function drawVectorPlayer(
   time = 0,
   skinStyle: PlayerSkinStyle = 'classic',
   garageConfig?: GarageConfig,
-  animDuration?: number
+  animDuration?: number,
+  comboVisualContext?: {
+    prevAnim?: string;
+    chainActive?: boolean;
+    comboStep?: number;
+    caneSpin?: boolean;
+  }
 ) {
   ctx.save();
 
@@ -805,12 +998,26 @@ export function drawVectorPlayer(
   const isSpecialCoil = anim === 'special' && animTimer > 0.22;
   const isTrinityCoil = isSpecialCoil;
 
+  const prevComboAnim = comboVisualContext?.prevAnim ?? 'idle';
+  const isComboChainActive = Boolean(comboVisualContext?.chainActive);
+  const isFinalCaneSpin = Boolean(comboVisualContext?.caneSpin) && anim === 'cane';
+  const isComboHoldGuard =
+    anim === 'idle' &&
+    isComboChainActive &&
+    (prevComboAnim === 'punch1' || prevComboAnim === 'punch2' || prevComboAnim === 'kick');
+
   // Pose-specific body offsets & lean for unmistakable arcade silhouettes
   let bodyDx = 0;
   let bodyDy = 0;
   let leanAngle = 0;
 
-  if (anim === 'idle') {
+  if (isComboHoldGuard) {
+    // Keep protagonist engaged in coiled martial-arts follow-through between chained hits (never neutral)
+    const holdBob = Math.sin(auraClock * 15) > 0 ? 0.5 : 0;
+    bodyDx = prevComboAnim === 'punch2' ? 2.8 : prevComboAnim === 'punch1' ? 2.2 : 1.5;
+    bodyDy = 1.6 + holdBob;
+    leanAngle = prevComboAnim === 'kick' ? -0.04 : 0.1;
+  } else if (anim === 'idle') {
     bodyDy = idleFrame === 1 ? 1 : 0;
   } else if (anim === 'fightStance') {
     bodyDx = 1;
@@ -836,76 +1043,125 @@ export function drawVectorPlayer(
     bodyDx = 0.8;
     bodyDy = walkBobTable[walkFrame];
     leanAngle = walkLeanTable[walkFrame];
-  } else if (anim === 'punch1' || anim === 'punch2') {
-    if (animProgress < 0.22) {
-      const ant = animProgress / 0.22;
-      bodyDx = -2.5 * ant;
-      bodyDy = 0.5 * ant;
-      leanAngle = -0.11 * ant;
+  } else if (anim === 'punch1') {
+    if (animProgress < 0.18) {
+      const ant = animProgress / 0.18;
+      bodyDx = -1.6 * ant;
+      bodyDy = 0.8 * ant;
+      leanAngle = -0.07 * ant;
     } else if (animProgress < 0.68) {
-      bodyDx = anim === 'punch2' ? 4 : 3;
-      bodyDy = 1;
-      leanAngle = anim === 'punch2' ? 0.15 : 0.12;
+      bodyDx = 3.2;
+      bodyDy = 1.0;
+      leanAngle = 0.12;
     } else {
       const rec = Math.max(0, 1 - (animProgress - 0.68) / 0.32);
-      bodyDx = (anim === 'punch2' ? 4 : 3) * rec;
-      bodyDy = 1 * rec;
-      leanAngle = 0.12 * rec;
+      if (isComboChainActive) {
+        // Hold forward follow-through into coiled guard so punch2 flows seamlessly
+        bodyDx = 2.2 + rec * 1.0;
+        bodyDy = 1.2 - rec * 0.2;
+        leanAngle = 0.08 + rec * 0.04;
+      } else {
+        bodyDx = 3.2 * rec;
+        bodyDy = 1.0 * rec;
+        leanAngle = 0.12 * rec;
+      }
+    }
+  } else if (anim === 'punch2') {
+    const startDx = prevComboAnim === 'punch1' ? 2.2 : prevComboAnim === 'kick' ? 1.5 : 0;
+    const startLean = prevComboAnim === 'punch1' ? 0.08 : prevComboAnim === 'kick' ? 0.04 : 0;
+    if (animProgress < 0.20) {
+      // Seamless shoulder/hip windup out of jab or kick follow-through
+      const t = animProgress / 0.20;
+      bodyDx = startDx + (0.6 - startDx) * t;
+      bodyDy = 1.3 + 0.2 * t;
+      leanAngle = startLean + (-0.06 - startLean) * t;
+    } else if (animProgress < 0.68) {
+      bodyDx = 4.8;
+      bodyDy = 1.5;
+      leanAngle = 0.19;
+    } else {
+      const rec = Math.max(0, 1 - (animProgress - 0.68) / 0.32);
+      if (isComboChainActive) {
+        bodyDx = 2.8 + rec * 2.0;
+        bodyDy = 1.5;
+        leanAngle = 0.11 + rec * 0.08;
+      } else {
+        bodyDx = 4.8 * rec;
+        bodyDy = 1.5 * rec;
+        leanAngle = 0.19 * rec;
+      }
     }
   } else if (anim === 'punch3') {
     bodyDx = 2;
     bodyDy = -1;
     leanAngle = -0.05;
   } else if (anim === 'heavyPunch') {
-    if (animProgress < 0.32) {
-      // Antecipação: shoulder pulled back demonstrating intent
-      const windProg = Math.min(1, animProgress / 0.32);
-      bodyDx = -4.5 * windProg;
-      bodyDy = 1;
-      leanAngle = -0.24 * windProg;
+    const startDx =
+      prevComboAnim === 'punch2' ? 2.8 : prevComboAnim === 'punch1' ? 2.2 : prevComboAnim === 'kick' ? 1.5 : 0;
+    const startLean =
+      prevComboAnim === 'punch2' ? 0.11 : prevComboAnim === 'punch1' ? 0.08 : 0;
+    if (animProgress < 0.30) {
+      // Deep expressive torque windup flowing directly out of punch2's forward lean
+      const windProg = Math.min(1, animProgress / 0.30);
+      const ease = 1 - Math.pow(1 - windProg, 2);
+      bodyDx = startDx + (-5.5 - startDx) * ease;
+      bodyDy = 1.4 + 1.0 * ease;
+      leanAngle = startLean + (-0.28 - startLean) * ease;
     } else if (animProgress < 0.68) {
-      // Impacto: rapid forward punch extension
-      bodyDx = 5.5;
-      bodyDy = 1;
-      leanAngle = 0.18;
+      // Explosive full-body finisher lunge
+      const snap = Math.min(1, (animProgress - 0.30) / 0.08);
+      bodyDx = -2.0 + 9.2 * snap;
+      bodyDy = 1.8;
+      leanAngle = -0.04 + 0.29 * snap;
     } else {
-      // Recuo: smooth return to combat stance
+      // Expressive martial follow-through recovery
       const rec = Math.max(0, 1 - (animProgress - 0.68) / 0.32);
-      bodyDx = 1 + rec * 4.5;
-      bodyDy = rec * 1;
-      leanAngle = 0.04 + rec * 0.14;
+      bodyDx = 1.5 + rec * 5.7;
+      bodyDy = 0.6 + rec * 1.2;
+      leanAngle = 0.05 + rec * 0.20;
     }
   } else if (anim === 'kick') {
+    const startDx = prevComboAnim === 'punch1' || prevComboAnim === 'punch2' ? 2.0 : 0;
+    const startLean = prevComboAnim === 'punch1' || prevComboAnim === 'punch2' ? 0.08 : 0;
     if (animProgress < 0.24) {
       const ant = animProgress / 0.24;
-      bodyDx = -1 * ant;
-      bodyDy = -1 * ant;
-      leanAngle = -0.05 * ant;
+      bodyDx = startDx + (-1.5 - startDx) * ant;
+      bodyDy = 0.6 - 1.6 * ant;
+      leanAngle = startLean + (-0.08 - startLean) * ant;
     } else if (animProgress < 0.70) {
-      bodyDx = -2;
-      bodyDy = -1;
-      leanAngle = -0.17;
+      bodyDx = -2.0;
+      bodyDy = -1.0;
+      leanAngle = -0.19;
     } else {
       const rec = Math.max(0, 1 - (animProgress - 0.70) / 0.30);
-      bodyDx = -2 * rec;
-      bodyDy = -1 * rec;
-      leanAngle = -0.17 * rec;
+      if (isComboChainActive) {
+        // Step down directly into forward-weighted chain stance
+        bodyDx = 1.5 - rec * 3.5;
+        bodyDy = 1.2 - rec * 2.2;
+        leanAngle = 0.05 - rec * 0.24;
+      } else {
+        bodyDx = -2.0 * rec;
+        bodyDy = -1.0 * rec;
+        leanAngle = -0.19 * rec;
+      }
     }
   } else if (anim === 'jumpPunch') {
-    if (animProgress < 0.25) {
-      const ant = animProgress / 0.25;
+    if (animProgress < 0.18) {
+      // Coiled Shoryuken crouch prep before rising skyward
+      const ant = animProgress / 0.18;
       bodyDx = -2 * ant;
-      bodyDy = -1.5;
-      leanAngle = -0.1 * ant;
-    } else if (animProgress < 0.72) {
-      bodyDx = 3.5;
-      bodyDy = -1.5;
-      leanAngle = 0.16;
+      bodyDy = 2 * ant;
+      leanAngle = 0.14 * ant;
+    } else if (animProgress < 0.74) {
+      // Rising Shoryuken uppercut: proud lifted chest tilted into the skyward dragon punch
+      bodyDx = 2.5;
+      bodyDy = -3.5;
+      leanAngle = -0.18;
     } else {
-      const rec = Math.max(0, 1 - (animProgress - 0.72) / 0.28);
-      bodyDx = 3.5 * rec;
-      bodyDy = -1.5 * rec;
-      leanAngle = 0.16 * rec;
+      const rec = Math.max(0, 1 - (animProgress - 0.74) / 0.26);
+      bodyDx = 2.5 * rec;
+      bodyDy = -3.5 * rec;
+      leanAngle = -0.18 * rec;
     }
   } else if (anim === 'jumpKick') {
     if (animProgress < 0.20) {
@@ -927,36 +1183,67 @@ export function drawVectorPlayer(
     bodyDy = -2;
     leanAngle = isSpecialCoil ? -0.34 : -0.3;
   } else if (anim === 'kickFinisher') {
-    if (animProgress < 0.24) {
-      const ant = animProgress / 0.24;
-      bodyDx = -3 * ant;
-      bodyDy = 2 * ant;
-      leanAngle = -0.08 * ant;
-    } else if (animProgress < 0.70) {
-      bodyDx = 3;
-      bodyDy = -2;
-      leanAngle = -0.24;
+    const startDx =
+      prevComboAnim === 'punch2' ? 2.8 : prevComboAnim === 'punch1' ? 2.2 : prevComboAnim === 'kick' ? 1.5 : 0;
+    const startLean =
+      prevComboAnim === 'kick' ? 0.05 : prevComboAnim === 'punch1' || prevComboAnim === 'punch2' ? 0.10 : 0;
+    if (animProgress < 0.22) {
+      // Expressive spring-coiled pivot leveraging previous shoulder/hip momentum
+      const ant = animProgress / 0.22;
+      bodyDx = startDx + (-3.6 - startDx) * ant;
+      bodyDy = 1.2 + 1.8 * ant;
+      leanAngle = startLean + (-0.12 - startLean) * ant;
+    } else if (animProgress < 0.72) {
+      // Dramatic high roundhouse finisher lean-back
+      bodyDx = 4.2;
+      bodyDy = -2.8;
+      leanAngle = -0.32;
     } else {
-      const rec = Math.max(0, 1 - (animProgress - 0.70) / 0.30);
-      bodyDx = 3 * rec;
-      bodyDy = -2 * rec;
-      leanAngle = -0.24 * rec;
+      const rec = Math.max(0, 1 - (animProgress - 0.72) / 0.28);
+      bodyDx = 1.2 + rec * 3.0;
+      bodyDy = 0.6 - rec * 3.4;
+      leanAngle = 0.04 - rec * 0.36;
     }
   } else if (anim === 'cane') {
-    if (animProgress < 0.22) {
+    if (isFinalCaneSpin) {
+      if (animProgress < 0.16) {
+        const ant = animProgress / 0.16;
+        bodyDx = -2.5 * ant;
+        bodyDy = 1.5 * ant;
+        leanAngle = -0.18 * ant;
+      } else if (animProgress < 0.78) {
+        const spinPhase = (animProgress - 0.16) / 0.62;
+        bodyDx = 3.5;
+        bodyDy = -1.5 - Math.sin(spinPhase * Math.PI) * 1.5;
+        leanAngle = Math.cos(spinPhase * Math.PI * 2) * 0.22;
+      } else {
+        const rec = Math.max(0, 1 - (animProgress - 0.78) / 0.22);
+        bodyDx = 3.5 * rec;
+        bodyDy = -1.5 * rec;
+        leanAngle = 0.16 * rec;
+      }
+    } else if (animProgress < 0.22) {
+      // Frame 2: cock cane overhead behind head/shoulders
       const ant = animProgress / 0.22;
       bodyDx = -2.5 * ant;
-      bodyDy = 0;
-      leanAngle = -0.14 * ant;
-    } else if (animProgress < 0.70) {
-      bodyDx = 3;
-      bodyDy = 1;
-      leanAngle = 0.14;
+      bodyDy = -1 * ant;
+      leanAngle = -0.16 * ant;
+    } else if (animProgress < 0.46) {
+      // Frame 3: high forward diagonal slash thrust
+      bodyDx = 2.5;
+      bodyDy = -0.5;
+      leanAngle = 0.10;
+    } else if (animProgress < 0.72) {
+      // Frame 4: deep low forward lunge sweep
+      bodyDx = 3.5;
+      bodyDy = 2.2;
+      leanAngle = 0.24;
     } else {
-      const rec = Math.max(0, 1 - (animProgress - 0.70) / 0.30);
-      bodyDx = 3 * rec;
-      bodyDy = 1 * rec;
-      leanAngle = 0.14 * rec;
+      // Frames 5-7: pull cane horizontally back across chest into upright guard
+      const rec = Math.max(0, 1 - (animProgress - 0.72) / 0.28);
+      bodyDx = 3.5 * rec;
+      bodyDy = 2.2 * rec;
+      leanAngle = 0.24 * rec;
     }
   } else if (anim === 'finisherPiledriver') {
     if (animProgress < 0.22) {
@@ -1417,24 +1704,46 @@ export function drawVectorPlayer(
       ctx.arc(4, hipY - 3, 24, -0.38, 0.38);
       ctx.stroke();
     } else {
-      // Recuo: controlled leg drop back to guard stance
+      // Recuo: lands forward into ready combat lunge if chained, or controlled stance
       const rec = Math.max(0, 1 - (animProgress - 0.70) / 0.30);
-      const fx = 9 + rec * 15;
+      const targetFx = isComboChainActive ? 9 : 7;
+      const fx = targetFx + rec * (24 - targetFx);
       const fy = -2 + rec * (hipY - 2);
       pxLimb(ctx, bodyDx + 2, hipY, bodyDx + 6 + rec * 7, -9 + rec * (hipY + 7), 6, pal.pantsUpperFront, pal.pantsUpperFrontDark);
       pxLimb(ctx, bodyDx + 6 + rec * 7, -9 + rec * (hipY + 7), fx, fy, 5.5, pal.pantsLowerFront, pal.pantsLowerFrontDark);
       drawShoe(fx + 1, fy, rec > 0.4);
     }
   } else if (anim === 'jumpPunch') {
-    // Airborne brawler punch tuck with bent knees
-    const tuckShift = animProgress >= 0.25 && animProgress < 0.72 ? 1.5 : 0;
-    pxLimb(ctx, bodyDx - 2, hipY, -7 - tuckShift, hipY + 3, 5.8, pal.pantsUpperRear, pal.pantsUpperRearDark);
-    pxLimb(ctx, -7 - tuckShift, hipY + 3, -12 - tuckShift, hipY + 9, 5.4, pal.pantsLowerRear, pal.pantsLowerRearDark);
-    drawShoe(-12 - tuckShift, hipY + 9);
+    // Classic Shoryuken airborne silhouette: high driving front knee + extended trailing rear leg
+    if (animProgress < 0.18) {
+      pxLimb(ctx, bodyDx - 2, hipY, -7, hipY + 3, 5.8, pal.pantsUpperRear, pal.pantsUpperRearDark);
+      pxLimb(ctx, -7, hipY + 3, -10, hipY + 9, 5.4, pal.pantsLowerRear, pal.pantsLowerRearDark);
+      drawShoe(-10, hipY + 9);
 
-    pxLimb(ctx, bodyDx + 2, hipY, 8 + tuckShift, hipY - 2, 5.9, pal.pantsUpperFront, pal.pantsUpperFrontDark);
-    pxLimb(ctx, 8 + tuckShift, hipY - 2, 5 + tuckShift, hipY + 7, 5.5, pal.pantsLowerFront, pal.pantsLowerFrontDark);
-    drawShoe(6 + tuckShift, hipY + 7);
+      pxLimb(ctx, bodyDx + 2, hipY, 7, hipY - 3, 5.9, pal.pantsUpperFront, pal.pantsUpperFrontDark);
+      pxLimb(ctx, 7, hipY - 3, 4, hipY + 6, 5.5, pal.pantsLowerFront, pal.pantsLowerFrontDark);
+      drawShoe(5, hipY + 6);
+    } else if (animProgress < 0.74) {
+      pxLimb(ctx, bodyDx - 2, hipY, -6, hipY + 5, 5.8, pal.pantsUpperRear, pal.pantsUpperRearDark);
+      pxLimb(ctx, -6, hipY + 5, -11, hipY + 13, 5.4, pal.pantsLowerRear, pal.pantsLowerRearDark);
+      drawShoe(-11, hipY + 13);
+
+      pxLimb(ctx, bodyDx + 2, hipY, 11, hipY - 9, 6.1, pal.pantsUpperFront, pal.pantsUpperFrontDark);
+      pxLimb(ctx, 11, hipY - 9, 6, hipY + 1, 5.6, pal.pantsLowerFront, pal.pantsLowerFrontDark);
+      drawShoe(7, hipY + 1);
+    } else {
+      const rec = Math.max(0, 1 - (animProgress - 0.74) / 0.26);
+      const bfx = -9 - rec * 2;
+      const bfy = hipY + 8 + rec * 5;
+      const fky = hipY - 2 - rec * 7;
+      pxLimb(ctx, bodyDx - 2, hipY, -6, hipY + 3 + rec * 2, 5.8, pal.pantsUpperRear, pal.pantsUpperRearDark);
+      pxLimb(ctx, -6, hipY + 3 + rec * 2, bfx, bfy, 5.4, pal.pantsLowerRear, pal.pantsLowerRearDark);
+      drawShoe(bfx, bfy);
+
+      pxLimb(ctx, bodyDx + 2, hipY, 8 + rec * 3, fky, 5.9, pal.pantsUpperFront, pal.pantsUpperFrontDark);
+      pxLimb(ctx, 8 + rec * 3, fky, 5 + rec, hipY + 6 - rec * 5, 5.5, pal.pantsLowerFront, pal.pantsLowerFrontDark);
+      drawShoe(6 + rec, hipY + 6 - rec * 5);
+    }
   } else if (anim === 'jumpKick') {
     // Chute da Garça / Crane Kick (Karatê Kid)
     pxLimb(ctx, bodyDx - 2, hipY, -6, -7, 5.8, pal.pantsUpperRear, pal.pantsUpperRearDark);
@@ -1533,37 +1842,42 @@ export function drawVectorPlayer(
       ctx.stroke();
     }
   } else if (anim === 'kickFinisher') {
-    pxLimb(ctx, bodyDx - 2, hipY, -7, -9, 6, pal.pantsUpperRear, pal.pantsUpperRearDark);
-    pxLimb(ctx, -7, -9, -9, -2, 5.5, pal.pantsLowerRear, pal.pantsLowerRearDark);
-    drawShoe(-9, -2);
+    pxLimb(ctx, bodyDx - 2, hipY, -9, -8, 6.1, pal.pantsUpperRear, pal.pantsUpperRearDark);
+    pxLimb(ctx, -9, -8, -11, -2, 5.6, pal.pantsLowerRear, pal.pantsLowerRearDark);
+    drawShoe(-11, -2);
 
-    if (animProgress < 0.24) {
-      // Antecipação: coiled pivot crouch
-      pxLimb(ctx, bodyDx + 2, hipY, 9, hipY - 7, 6.0, pal.pantsUpperFront, pal.pantsUpperFrontDark);
-      pxLimb(ctx, 9, hipY - 7, 6, -2, 5.6, pal.pantsLowerFront, pal.pantsLowerFrontDark);
+    if (animProgress < 0.22) {
+      // Antecipação: coiled pivot crouch leveraging previous combo stance
+      pxLimb(ctx, bodyDx + 2, hipY, 9, hipY - 8, 6.1, pal.pantsUpperFront, pal.pantsUpperFrontDark);
+      pxLimb(ctx, 9, hipY - 8, 6, -2, 5.6, pal.pantsLowerFront, pal.pantsLowerFrontDark);
       drawShoe(7, -2);
-    } else if (animProgress < 0.70) {
-      // Impacto: explosive roundhouse finisher kick
-      pxLimb(ctx, bodyDx + 3, hipY, 15, hipY - 5, 6.2, pal.pantsUpperFront, pal.pantsUpperFrontDark);
-      pxLimb(ctx, 15, hipY - 5, 27, hipY - 9, 5.8, pal.pantsLowerFront, pal.pantsLowerFrontDark);
-      drawShoe(28, hipY - 9, true);
+    } else if (animProgress < 0.72) {
+      // Impacto: explosive high roundhouse finisher kick with 3-tone arc
+      pxLimb(ctx, bodyDx + 3, hipY, 16, hipY - 7, 6.3, pal.pantsUpperFront, pal.pantsUpperFrontDark);
+      pxLimb(ctx, 16, hipY - 7, 28, hipY - 12, 5.9, pal.pantsLowerFront, pal.pantsLowerFrontDark);
+      drawShoe(29, hipY - 12, true);
 
       ctx.strokeStyle = '#f97316';
-      ctx.lineWidth = 3.2;
+      ctx.lineWidth = 3.6;
       ctx.beginPath();
-      ctx.arc(3, hipY - 5, 27, -0.75, 0.45);
+      ctx.arc(3, hipY - 6, 29, -0.82, 0.48);
       ctx.stroke();
-      ctx.strokeStyle = '#fef08a';
-      ctx.lineWidth = 1.6;
+      ctx.strokeStyle = '#fde047';
+      ctx.lineWidth = 2.2;
       ctx.beginPath();
-      ctx.arc(3, hipY - 5, 25, -0.65, 0.38);
+      ctx.arc(3, hipY - 6, 26.5, -0.74, 0.42);
+      ctx.stroke();
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.arc(3, hipY - 6, 24, -0.62, 0.30);
       ctx.stroke();
     } else {
-      const rec = Math.max(0, 1 - (animProgress - 0.70) / 0.30);
-      const fx = 9 + rec * 18;
-      const fy = -2 + rec * (hipY - 7);
-      pxLimb(ctx, bodyDx + 2, hipY, 9 + rec * 6, -8 + rec * (hipY + 3), 6, pal.pantsUpperFront, pal.pantsUpperFrontDark);
-      pxLimb(ctx, 9 + rec * 6, -8 + rec * (hipY + 3), fx, fy, 5.6, pal.pantsLowerFront, pal.pantsLowerFrontDark);
+      const rec = Math.max(0, 1 - (animProgress - 0.72) / 0.28);
+      const fx = 10 + rec * 18;
+      const fy = -2 + rec * (hipY - 10);
+      pxLimb(ctx, bodyDx + 2, hipY, 9 + rec * 7, -8 + rec * (hipY + 1), 6, pal.pantsUpperFront, pal.pantsUpperFrontDark);
+      pxLimb(ctx, 9 + rec * 7, -8 + rec * (hipY + 1), fx, fy, 5.6, pal.pantsLowerFront, pal.pantsLowerFrontDark);
       drawShoe(fx + 1, fy, rec > 0.35);
     }
   } else if (anim === 'railSlam') {
@@ -1581,11 +1895,12 @@ export function drawVectorPlayer(
     ctx.fillStyle = '#ef4444';
     ctx.fillRect(-9, -49, 2, 13);
     ctx.fillRect(8, -46, 2, 12);
-  } else if (anim === 'punch1' || anim === 'punch2') {
-    const isAnt = animProgress < 0.22;
+  } else if (anim === 'punch1') {
+    const isAnt = animProgress < 0.18;
     const isRec = animProgress >= 0.68;
-    const lungeScale = isAnt ? 0.55 : isRec ? Math.max(0.6, 1 - (animProgress - 0.68) / 0.32) : 1;
-    const lunge = (anim === 'punch2' ? 15 : 13) * lungeScale;
+    const recFloor = isComboChainActive ? 0.78 : 0.6;
+    const lungeScale = isAnt ? 0.65 : isRec ? Math.max(recFloor, 1 - (animProgress - 0.68) / 0.32) : 1;
+    const lunge = 13 * lungeScale;
     pxLimb(ctx, bodyDx - 2, hipY, -9 * lungeScale, -8, 6.2, pal.pantsUpperRear, pal.pantsUpperRearDark);
     pxLimb(ctx, -9 * lungeScale, -8, -lunge, -1.5, 5.6, pal.pantsLowerRear, pal.pantsLowerRearDark);
     drawShoe(-lunge, -1.5);
@@ -1593,16 +1908,31 @@ export function drawVectorPlayer(
     pxLimb(ctx, bodyDx + 2, hipY, 8 + 2 * lungeScale, -9, 6.2, pal.pantsUpperFront, pal.pantsUpperFrontDark);
     pxLimb(ctx, 8 + 2 * lungeScale, -9, 7.5 + 1.5 * lungeScale, -1.5, 5.6, pal.pantsLowerFront, pal.pantsLowerFrontDark);
     drawShoe(8.5 + 1.5 * lungeScale, -1.5);
+  } else if (anim === 'punch2') {
+    const isAnt = animProgress < 0.20;
+    const isRec = animProgress >= 0.68;
+    const recFloor = isComboChainActive ? 0.82 : 0.62;
+    const lungeScale = isAnt ? 0.74 : isRec ? Math.max(recFloor, 1 - (animProgress - 0.68) / 0.32) : 1;
+    const rearFootX = -15.5 * lungeScale;
+    const frontKneeX = 9 + 2 * lungeScale;
+    const frontFootX = 8.5 + 1.8 * lungeScale;
+    pxLimb(ctx, bodyDx - 2, hipY, rearFootX * 0.6, -8, 6.2, pal.pantsUpperRear, pal.pantsUpperRearDark);
+    pxLimb(ctx, rearFootX * 0.6, -8, rearFootX, -1.5, 5.6, pal.pantsLowerRear, pal.pantsLowerRearDark);
+    drawShoe(rearFootX, -1.5);
+
+    pxLimb(ctx, bodyDx + 2, hipY, frontKneeX, -9, 6.3, pal.pantsUpperFront, pal.pantsUpperFrontDark);
+    pxLimb(ctx, frontKneeX, -9, frontFootX, -1.5, 5.7, pal.pantsLowerFront, pal.pantsLowerFrontDark);
+    drawShoe(frontFootX + 1, -1.5);
   } else if (anim === 'heavyPunch') {
-    const isWindup = animProgress < 0.32;
-    const rearPlantX = isWindup ? -14 : -16;
-    const frontPlantX = isWindup ? 7 : 10;
-    pxLimb(ctx, bodyDx - 2, hipY, rearPlantX + 4, -8, 6.4, pal.pantsUpperRear, pal.pantsUpperRearDark);
-    pxLimb(ctx, rearPlantX + 4, -8, rearPlantX, -1.5, 5.8, pal.pantsLowerRear, pal.pantsLowerRearDark);
+    const isWindup = animProgress < 0.30;
+    const rearPlantX = isWindup ? -14.5 : -18;
+    const frontPlantX = isWindup ? 7.5 : 11.5;
+    pxLimb(ctx, bodyDx - 2, hipY, rearPlantX + 4.5, -7.5, 6.4, pal.pantsUpperRear, pal.pantsUpperRearDark);
+    pxLimb(ctx, rearPlantX + 4.5, -7.5, rearPlantX, -1.5, 5.8, pal.pantsLowerRear, pal.pantsLowerRearDark);
     drawShoe(rearPlantX, -1.5);
 
-    pxLimb(ctx, bodyDx + 2, hipY, frontPlantX + 1.5, -9, 6.4, pal.pantsUpperFront, pal.pantsUpperFrontDark);
-    pxLimb(ctx, frontPlantX + 1.5, -9, frontPlantX, -1.5, 5.8, pal.pantsLowerFront, pal.pantsLowerFrontDark);
+    pxLimb(ctx, bodyDx + 2, hipY, frontPlantX + 1.5, -8, 6.5, pal.pantsUpperFront, pal.pantsUpperFrontDark);
+    pxLimb(ctx, frontPlantX + 1.5, -8, frontPlantX, -1.5, 5.9, pal.pantsLowerFront, pal.pantsLowerFrontDark);
     drawShoe(frontPlantX + 1, -1.5);
   } else if (anim === 'finisherPiledriver') {
     if (animProgress >= 0.56 && animProgress < 0.84) {
@@ -1943,6 +2273,80 @@ export function drawVectorPlayer(
     pxLimb(ctx, bodyDx + 2, hipY, 10, -9, 5.8, pal.pantsUpperFront, pal.pantsUpperFrontDark);
     pxLimb(ctx, 10, -9, 12, -2, 5.4, pal.pantsLowerFront, pal.pantsLowerFrontDark);
     drawShoe(13, -2);
+  } else if (anim === 'cane') {
+    if (isFinalCaneSpin) {
+      if (animProgress < 0.16) {
+        pxLimb(ctx, bodyDx - 2, hipY, -9, -7, 6.0, pal.pantsUpperRear, pal.pantsUpperRearDark);
+        pxLimb(ctx, -9, -7, -11, -2, 5.5, pal.pantsLowerRear, pal.pantsLowerRearDark);
+        drawShoe(-11, -2);
+
+        pxLimb(ctx, bodyDx + 2, hipY, 9, -7, 6.0, pal.pantsUpperFront, pal.pantsUpperFrontDark);
+        pxLimb(ctx, 9, -7, 9, -2, 5.5, pal.pantsLowerFront, pal.pantsLowerFrontDark);
+        drawShoe(10, -2);
+      } else if (animProgress < 0.78) {
+        const spinPhase = (animProgress - 0.16) / 0.62;
+        const spinStep = Math.cos(spinPhase * Math.PI * 2) * 8;
+        pxLimb(ctx, bodyDx - 1, hipY, -spinStep * 0.7, -8, 5.8, pal.pantsUpperRear, pal.pantsUpperRearDark);
+        pxLimb(ctx, -spinStep * 0.7, -8, -spinStep, -3, 5.4, pal.pantsLowerRear, pal.pantsLowerRearDark);
+        drawShoe(-spinStep, -3);
+
+        pxLimb(ctx, bodyDx + 1, hipY, spinStep * 0.7, -8, 5.8, pal.pantsUpperFront, pal.pantsUpperFrontDark);
+        pxLimb(ctx, spinStep * 0.7, -8, spinStep, -3, 5.4, pal.pantsLowerFront, pal.pantsLowerFrontDark);
+        drawShoe(spinStep + 1, -3);
+      } else {
+        pxLimb(ctx, bodyDx - 2, hipY, -8, -8, 5.9, pal.pantsUpperRear, pal.pantsUpperRearDark);
+        pxLimb(ctx, -8, -8, -10, -2, 5.5, pal.pantsLowerRear, pal.pantsLowerRearDark);
+        drawShoe(-10, -2);
+
+        pxLimb(ctx, bodyDx + 2, hipY, 8, -9, 5.9, pal.pantsUpperFront, pal.pantsUpperFrontDark);
+        pxLimb(ctx, 8, -9, 9, -2, 5.5, pal.pantsLowerFront, pal.pantsLowerFrontDark);
+        drawShoe(10, -2);
+      }
+    } else if (animProgress < 0.22) {
+      pxLimb(ctx, bodyDx - 2, hipY, -8, -8, 5.9, pal.pantsUpperRear, pal.pantsUpperRearDark);
+      pxLimb(ctx, -8, -8, -10, -2, 5.5, pal.pantsLowerRear, pal.pantsLowerRearDark);
+      drawShoe(-10, -2);
+
+      pxLimb(ctx, bodyDx + 2, hipY, 7, -9, 5.9, pal.pantsUpperFront, pal.pantsUpperFrontDark);
+      pxLimb(ctx, 7, -9, 8, -2, 5.5, pal.pantsLowerFront, pal.pantsLowerFrontDark);
+      drawShoe(9, -2);
+    } else if (animProgress < 0.46) {
+      pxLimb(ctx, bodyDx - 2, hipY, -10, -8, 6.0, pal.pantsUpperRear, pal.pantsUpperRearDark);
+      pxLimb(ctx, -10, -8, -13, -2, 5.5, pal.pantsLowerRear, pal.pantsLowerRearDark);
+      drawShoe(-13, -2);
+
+      pxLimb(ctx, bodyDx + 2, hipY, 9, -9, 6.0, pal.pantsUpperFront, pal.pantsUpperFrontDark);
+      pxLimb(ctx, 9, -9, 11, -2, 5.5, pal.pantsLowerFront, pal.pantsLowerFrontDark);
+      drawShoe(12, -2);
+    } else if (animProgress < 0.72) {
+      pxLimb(ctx, bodyDx - 2, hipY, -11, -7, 6.0, pal.pantsUpperRear, pal.pantsUpperRearDark);
+      pxLimb(ctx, -11, -7, -14, -2, 5.5, pal.pantsLowerRear, pal.pantsLowerRearDark);
+      drawShoe(-14, -2);
+
+      pxLimb(ctx, bodyDx + 2, hipY, 11, -7, 6.1, pal.pantsUpperFront, pal.pantsUpperFrontDark);
+      pxLimb(ctx, 11, -7, 11, -2, 5.6, pal.pantsLowerFront, pal.pantsLowerFrontDark);
+      drawShoe(12, -2);
+    } else {
+      const rec = Math.max(0, 1 - (animProgress - 0.72) / 0.28);
+      const rFootX = -8 - rec * 6;
+      const fFootX = 8 + rec * 3;
+      pxLimb(ctx, bodyDx - 2, hipY, rFootX + 2, -8, 5.9, pal.pantsUpperRear, pal.pantsUpperRearDark);
+      pxLimb(ctx, rFootX + 2, -8, rFootX, -2, 5.5, pal.pantsLowerRear, pal.pantsLowerRearDark);
+      drawShoe(rFootX, -2);
+
+      pxLimb(ctx, bodyDx + 2, hipY, fFootX, -8.5, 5.9, pal.pantsUpperFront, pal.pantsUpperFrontDark);
+      pxLimb(ctx, fFootX, -8.5, fFootX, -2, 5.5, pal.pantsLowerFront, pal.pantsLowerFrontDark);
+      drawShoe(fFootX + 1, -2);
+    }
+  } else if (isComboHoldGuard) {
+    // Coiled martial-arts ready legs between combo hits
+    pxLimb(ctx, bodyDx - 2, hipY, -9, -8, 6.1, pal.pantsUpperRear, pal.pantsUpperRearDark);
+    pxLimb(ctx, -9, -8, -11, -2, 5.6, pal.pantsLowerRear, pal.pantsLowerRearDark);
+    drawShoe(-11, -2);
+
+    pxLimb(ctx, bodyDx + 2, hipY, 9, -8.5, 6.1, pal.pantsUpperFront, pal.pantsUpperFrontDark);
+    pxLimb(ctx, 9, -8.5, 9.5, -2, 5.6, pal.pantsLowerFront, pal.pantsLowerFrontDark);
+    drawShoe(10.5, -2);
   } else {
     pxLimb(ctx, bodyDx - 2, hipY, -6, -9, 5.8, pal.pantsUpperRear, pal.pantsUpperRearDark);
     pxLimb(ctx, -6, -9, -7, -2, 5.4, pal.pantsLowerRear, pal.pantsLowerRearDark);
@@ -2000,15 +2404,21 @@ export function drawVectorPlayer(
   }
 
   // Rear guard arm (under torso)
-  if (anim === 'fightStance') {
-    const fBob = Math.sin(auraClock * 9.5) > 0 ? -1 : 1;
+  if (anim === 'fightStance' || isComboHoldGuard) {
+    const fBob = isComboHoldGuard ? 0 : Math.sin(auraClock * 9.5) > 0 ? -1 : 1;
     pxLimb(ctx, bodyDx + 1, torsoTopY + 4, bodyDx + 6, torsoTopY + 5 + fBob, 4.6, pal.shirtShadow, '#475569');
-    pxLimb(ctx, bodyDx + 6, torsoTopY + 5 + fBob, bodyDx + 7, torsoTopY - 2 + fBob, 4.2, skinTone, skinShade);
-    celFist(ctx, bodyDx + 7.5, torsoTopY - 3 + fBob, 5.2, skinTone, skinShade);
+    pxLimb(ctx, bodyDx + 6, torsoTopY + 5 + fBob, bodyDx + 7, torsoTopY - 1 + fBob, 4.2, skinTone, skinShade);
+    celFist(ctx, bodyDx + 7.5, torsoTopY - 2 + fBob, 5.2, skinTone, skinShade);
   } else if (anim === 'jumpPunch') {
-    if (animProgress < 0.25) {
-      pxLimb(ctx, bodyDx + 1, torsoTopY + 4, bodyDx + 7, torsoTopY + 5, 4.6, pal.shirtShadow, '#475569');
-      celFist(ctx, bodyDx + 8, torsoTopY + 4.5, 5.1, skinTone, skinShade);
+    if (animProgress < 0.18) {
+      pxLimb(ctx, bodyDx - 2, torsoTopY + 4, bodyDx - 5, torsoTopY + 7, 4.6, pal.sleeveShadow, '#334155');
+      celFist(ctx, bodyDx - 6, torsoTopY + 7.5, 5.1, skinTone, skinShade);
+    } else if (animProgress < 0.74) {
+      // Rear arm clenched tightly downward by hip/waist to emphasize skyward Shoryuken uppercut
+      pxLimb(ctx, bodyDx - 2, torsoTopY + 4, bodyDx - 5, torsoTopY + 9, 4.7, pal.sleeveShadow, '#334155');
+      celRolledCuff(ctx, bodyDx - 5, torsoTopY + 9, 1.35, 4.7, pal.sleeveMain, pal.sleeveShadow);
+      pxLimb(ctx, bodyDx - 5, torsoTopY + 9, bodyDx - 6.5, hipY + 0.5, 4.2, skinTone, skinShade);
+      celFist(ctx, bodyDx - 6.5, hipY + 1, 5.3, skinTone, skinShade);
     } else {
       pxLimb(ctx, bodyDx - 2, torsoTopY + 4.5, bodyDx - 6, torsoTopY + 8, 4.6, pal.sleeveShadow, '#334155');
       celRolledCuff(ctx, bodyDx - 4.5, torsoTopY + 7.5, 0.35, 4.6, pal.sleeveMain, pal.sleeveShadow);
@@ -2025,23 +2435,65 @@ export function drawVectorPlayer(
   } else if (anim === 'rkoCatch' || anim === 'rkoSlam') {
     pxLimb(ctx, bodyDx + 2, torsoTopY + 3, bodyDx + 12, torsoTopY - 2, 4.5, pal.sleeveShadow, '#334155');
     celFist(ctx, bodyDx + 13, torsoTopY - 2, 5.2, skinTone, skinShade);
-  } else if (anim === 'punch1' || anim === 'punch2') {
-    // Coiled rear guard fist tucked right at chest/jaw
-    pxLimb(ctx, bodyDx - 2, torsoTopY + 4.5, bodyDx - 5, torsoTopY + 8.5, 4.8, pal.sleeveShadow, '#475569');
-    celRolledCuff(ctx, bodyDx - 3.5, torsoTopY + 8, 0.35, 4.8, pal.sleeveMain, pal.sleeveShadow);
-    pxLimb(ctx, bodyDx - 3.5, torsoTopY + 8, bodyDx + 1.5, torsoTopY + 4.5, 4.4, skinTone, skinShade);
-    celFist(ctx, bodyDx + 2, torsoTopY + 4, 5.4, skinTone, skinShade);
+  } else if (anim === 'punch1') {
+    // Coiled rear power arm loaded at chest/jaw ready to unleash punch2 cross
+    const loadBack = animProgress >= 0.68 && isComboChainActive ? -1.5 : 0;
+    pxLimb(ctx, bodyDx - 2, torsoTopY + 4.5, bodyDx - 5 + loadBack, torsoTopY + 8.5, 4.8, pal.sleeveShadow, '#475569');
+    celRolledCuff(ctx, bodyDx - 3.5 + loadBack, torsoTopY + 8, 0.35, 4.8, pal.sleeveMain, pal.sleeveShadow);
+    pxLimb(ctx, bodyDx - 3.5 + loadBack, torsoTopY + 8, bodyDx + 1.5, torsoTopY + 4.2, 4.4, skinTone, skinShade);
+    celFist(ctx, bodyDx + 2, torsoTopY + 3.8, 5.5, skinTone, skinShade);
+  } else if (anim === 'punch2') {
+    // Alternating jab arm pulls tightly back across ribs as rear shoulder rotates into the cross punch
+    const pullBack = animProgress < 0.20 ? (animProgress / 0.20) : 1;
+    const fistX = bodyDx + 5 - pullBack * 7.5;
+    const fistY = torsoTopY + 5.5 + pullBack * 1.5;
+    pxLimb(ctx, bodyDx - 2, torsoTopY + 4.5, bodyDx - 6, torsoTopY + 8.5, 4.8, pal.sleeveShadow, '#475569');
+    celRolledCuff(ctx, bodyDx - 5, torsoTopY + 8, 0.35, 4.8, pal.sleeveMain, pal.sleeveShadow);
+    pxLimb(ctx, bodyDx - 5, torsoTopY + 8, fistX, fistY, 4.4, skinTone, skinShade);
+    celFist(ctx, fistX, fistY, 5.4, skinTone, skinShade);
+  } else if (anim === 'kick') {
+    // Tight jaw guard arm while balancing snap kick
+    pxLimb(ctx, bodyDx + 1, torsoTopY + 3.5, bodyDx + 6, torsoTopY + 5, 4.6, pal.sleeveShadow, '#475569');
+    pxLimb(ctx, bodyDx + 6, torsoTopY + 5, bodyDx + 7, torsoTopY + 0.5, 4.2, skinTone, skinShade);
+    celFist(ctx, bodyDx + 7.5, torsoTopY, 5.2, skinTone, skinShade);
+  } else if (anim === 'kickFinisher') {
+    // Expressive forward/chest counterbalance arm during high roundhouse finisher
+    const whip = animProgress >= 0.22 && animProgress < 0.72 ? 1 : 0.4;
+    pxLimb(ctx, bodyDx + 1, torsoTopY + 3.5, bodyDx + 6 + whip * 2, torsoTopY + 4.5, 4.7, pal.sleeveShadow, '#475569');
+    pxLimb(ctx, bodyDx + 6 + whip * 2, torsoTopY + 4.5, bodyDx + 7 + whip * 2, torsoTopY - 0.5, 4.3, skinTone, skinShade);
+    celFist(ctx, bodyDx + 7.5 + whip * 2, torsoTopY - 1, 5.4, skinTone, skinShade);
   } else if (anim === 'heavyPunch') {
-    if (animProgress < 0.32) {
+    if (animProgress < 0.30) {
       // Rear guard arm forward slightly for balance while pulling punching shoulder back
-      pxLimb(ctx, bodyDx + 1, torsoTopY + 4, bodyDx + 8, torsoTopY + 5, 4.6, pal.shirtShadow, '#475569');
-      celFist(ctx, bodyDx + 9, torsoTopY + 4.5, 5.2, skinTone, skinShade);
+      pxLimb(ctx, bodyDx + 1, torsoTopY + 4, bodyDx + 8.5, torsoTopY + 4.5, 4.6, pal.shirtShadow, '#475569');
+      celFist(ctx, bodyDx + 9.5, torsoTopY + 4, 5.3, skinTone, skinShade);
     } else {
       // Taut chest-guard bent rear arm on punch contact & recovery
       pxLimb(ctx, bodyDx - 2, torsoTopY + 4.5, bodyDx - 5, torsoTopY + 8.5, 4.8, pal.sleeveShadow, '#475569');
       celRolledCuff(ctx, bodyDx - 3.5, torsoTopY + 8, 0.35, 4.8, pal.sleeveMain, pal.sleeveShadow);
-      pxLimb(ctx, bodyDx - 3.5, torsoTopY + 8, bodyDx + 1.5, torsoTopY + 4.5, 4.5, skinTone, skinShade);
+      pxLimb(ctx, bodyDx - 3.5, torsoTopY + 8, bodyDx + 1.5, torsoTopY + 4.5, 4.4, skinTone, skinShade);
       celFist(ctx, bodyDx + 2, torsoTopY + 4, 5.6, skinTone, skinShade);
+    }
+  } else if (anim === 'cane') {
+    if (isFinalCaneSpin && animProgress >= 0.16 && animProgress < 0.78) {
+      const spinPhase = (animProgress - 0.16) / 0.62;
+      const counterX = bodyDx - Math.cos(spinPhase * Math.PI * 2) * 11;
+      pxLimb(ctx, bodyDx - 2, torsoTopY + 4, counterX, torsoTopY + 5, 4.6, pal.sleeveShadow, '#334155');
+      celFist(ctx, counterX, torsoTopY + 5, 5.2, skinTone, skinShade);
+    } else if (animProgress < 0.46) {
+      // Rear guard hand tucked cleanly near ribs during windup & high slash
+      pxLimb(ctx, bodyDx - 2, torsoTopY + 4, bodyDx - 5, torsoTopY + 7, 4.6, pal.sleeveShadow, '#334155');
+      pxLimb(ctx, bodyDx - 5, torsoTopY + 7, bodyDx + 1, torsoTopY + 5, 4.2, skinTone, skinShade);
+      celFist(ctx, bodyDx + 1.5, torsoTopY + 5, 5.0, skinTone, skinShade);
+    } else if (animProgress < 0.72) {
+      // Counterbalance sweep back during low cane strike
+      pxLimb(ctx, bodyDx - 2, torsoTopY + 4, bodyDx - 8, torsoTopY + 7.5, 4.6, pal.sleeveShadow, '#334155');
+      celFist(ctx, bodyDx - 9, torsoTopY + 8.5, 5.0, skinTone, skinShade);
+    } else {
+      // Frames 5-7: second hand braces cane pull-back across chest
+      pxLimb(ctx, bodyDx - 2, torsoTopY + 4.5, bodyDx + 2, torsoTopY + 8, 4.6, pal.sleeveShadow, '#334155');
+      pxLimb(ctx, bodyDx + 2, torsoTopY + 8, bodyDx + 6, torsoTopY + 7, 4.2, skinTone, skinShade);
+      celFist(ctx, bodyDx + 6.5, torsoTopY + 7, 5.0, skinTone, skinShade);
     }
   } else if (anim === 'finisherPiledriver') {
     if (animProgress >= 0.22 && animProgress < 0.56) {
@@ -2206,9 +2658,19 @@ export function drawVectorPlayer(
       ? -2.5
       : anim === 'walk'
         ? walkTieTable[walkFrame]
-        : anim === 'punch1' || anim === 'punch2' || anim === 'heavyPunch' || anim === 'jumpPunch'
-          ? -1.6
-          : 0;
+        : isFinalCaneSpin && animProgress >= 0.16 && animProgress < 0.78
+          ? Math.cos(((animProgress - 0.16) / 0.62) * Math.PI * 2) * 3.2
+          : anim === 'heavyPunch'
+            ? -3.4
+            : anim === 'kickFinisher'
+              ? -2.8
+              : anim === 'punch2'
+                ? -2.1
+                : anim === 'punch1' || anim === 'jumpPunch'
+                  ? -1.6
+                  : isComboHoldGuard
+                    ? -0.8
+                    : 0;
   if (!pal.hideChestTie) {
     ctx.save();
     // Blade
@@ -2551,7 +3013,14 @@ export function drawVectorPlayer(
     ctx.stroke();
     if (!pal.ninjaHeadTie) {
       // Gritted expression on attack/stance or determined line on idle
-      if (anim === 'punch1' || anim === 'punch2' || anim === 'heavyPunch' || anim === 'fightStance') {
+      if (
+        anim === 'punch1' ||
+        anim === 'punch2' ||
+        anim === 'heavyPunch' ||
+        anim === 'kickFinisher' ||
+        anim === 'fightStance' ||
+        isComboHoldGuard
+      ) {
         pxRect(ctx, bodyDx + 1.5, headY + 7.6, 3.2, 1.6, '#ffffff', '#090d16', 0.75);
       } else {
         ctx.fillStyle = '#090d16';
@@ -2594,18 +3063,18 @@ export function drawVectorPlayer(
   }
 
   // --- LEAD ARM & ATTACK ANIMATIONS ---
-  if (anim === 'punch1' || anim === 'punch2') {
-    const maxReach = anim === 'punch2' ? 25 : 22;
-    if (animProgress < 0.22) {
-      // Antecipação: lead elbow & fist pulled back coiled at rib/shoulder
-      const pull = animProgress / 0.22;
-      const backX = bodyDx - 3 * pull;
-      pxLimb(ctx, bodyDx + 2, torsoTopY + 3.5, backX - 2, torsoTopY + 6, 5.0, pal.sleeveMain, pal.sleeveShadow);
-      celRolledCuff(ctx, backX - 2, torsoTopY + 6, -0.25, 5.0, pal.sleeveMain, pal.sleeveShadow);
-      pxLimb(ctx, backX - 2, torsoTopY + 6, backX + 2, torsoTopY + 4, 4.5, skinTone, skinShade);
-      celFist(ctx, backX + 3, torsoTopY + 3.8, 5.8, skinTone, skinShade);
+  if (anim === 'punch1') {
+    const maxReach = 22;
+    if (animProgress < 0.18) {
+      // Snappy jab coil
+      const pull = animProgress / 0.18;
+      const backX = bodyDx - 2.2 * pull;
+      pxLimb(ctx, bodyDx + 2, torsoTopY + 3.5, backX - 1.5, torsoTopY + 6, 5.0, pal.sleeveMain, pal.sleeveShadow);
+      celRolledCuff(ctx, backX - 1.5, torsoTopY + 6, -0.25, 5.0, pal.sleeveMain, pal.sleeveShadow);
+      pxLimb(ctx, backX - 1.5, torsoTopY + 6, backX + 2.5, torsoTopY + 4, 4.5, skinTone, skinShade);
+      celFist(ctx, backX + 3.5, torsoTopY + 3.8, 5.8, skinTone, skinShade);
     } else if (animProgress < 0.68) {
-      // Impacto: snapped extension with crisp yellow speed smear
+      // Crisp horizontal jab + yellow speed smear
       pxLimb(ctx, bodyDx + 2, torsoTopY + 3.5, bodyDx + 11, torsoTopY + 3.5, 5.2, pal.sleeveMain, pal.sleeveShadow);
       celRolledCuff(ctx, bodyDx + 11.5, torsoTopY + 3.5, 0, 5.2, pal.sleeveMain, pal.sleeveShadow);
       pxLimb(ctx, bodyDx + 12.5, torsoTopY + 3.5, bodyDx + maxReach, torsoTopY + 3.5, 4.6, skinTone, skinShade);
@@ -2613,47 +3082,99 @@ export function drawVectorPlayer(
       ctx.fillStyle = 'rgba(254, 240, 138, 0.8)';
       ctx.fillRect(bodyDx + 12, torsoTopY + 0.5, 11, 1.3);
     } else {
-      // Recuo: smooth arm retraction toward guard
+      // Hold coiled forward combat guard when chained (prevents drop back to neutral)
       const rec = Math.max(0, 1 - (animProgress - 0.68) / 0.32);
-      const extX = bodyDx + 9 + rec * (maxReach - 9);
-      pxLimb(ctx, bodyDx + 2, torsoTopY + 3.8, bodyDx + 6 + rec * 5, torsoTopY + 4, 5.0, pal.sleeveMain, pal.sleeveShadow);
-      celRolledCuff(ctx, bodyDx + 6.5 + rec * 5, torsoTopY + 4, 0, 5.0, pal.sleeveMain, pal.sleeveShadow);
-      pxLimb(ctx, bodyDx + 7 + rec * 5, torsoTopY + 4, extX, torsoTopY + 3.5, 4.5, skinTone, skinShade);
-      celFist(ctx, extX + 1, torsoTopY + 3.2, 5.8, skinTone, skinShade);
+      const minExt = isComboChainActive ? 12.5 : 9;
+      const extX = bodyDx + minExt + rec * (maxReach - minExt);
+      const fistY = isComboChainActive ? torsoTopY + 2.6 + rec * 0.9 : torsoTopY + 3.5;
+      pxLimb(ctx, bodyDx + 2, torsoTopY + 3.8, bodyDx + 7 + rec * 4, torsoTopY + 4.2, 5.0, pal.sleeveMain, pal.sleeveShadow);
+      celRolledCuff(ctx, bodyDx + 7.5 + rec * 4, torsoTopY + 4.2, -0.25 * (1 - rec), 5.0, pal.sleeveMain, pal.sleeveShadow);
+      pxLimb(ctx, bodyDx + 8 + rec * 4, torsoTopY + 4.2, extX, fistY, 4.5, skinTone, skinShade);
+      celFist(ctx, extX + 1, fistY - 0.3, 5.8, skinTone, skinShade);
+    }
+  } else if (anim === 'punch2') {
+    // 2nd hit: rotated shoulder power cross/hook flowing smoothly out of jab or kick
+    const maxReach = 26.5;
+    if (animProgress < 0.20) {
+      // Coil rear/power shoulder back seamlessly from punch1/kick forward stance
+      const pull = animProgress / 0.20;
+      const startX = prevComboAnim === 'punch1' ? bodyDx + 11 : bodyDx + 6;
+      const elbowX = startX + (bodyDx - 3.5 - startX) * pull;
+      const elbowY = torsoTopY + 5 + pull * 1.5;
+      const fistX = startX + (bodyDx + 1 - startX) * pull;
+      pxLimb(ctx, bodyDx + 2, torsoTopY + 3.8, elbowX, elbowY, 5.1, pal.sleeveMain, pal.sleeveShadow);
+      celRolledCuff(ctx, elbowX, elbowY, -0.2, 5.1, pal.sleeveMain, pal.sleeveShadow);
+      pxLimb(ctx, elbowX, elbowY, fistX, torsoTopY + 4, 4.6, skinTone, skinShade);
+      celFist(ctx, fistX + 1, torsoTopY + 3.6, 6.0, skinTone, skinShade);
+    } else if (animProgress < 0.68) {
+      // Driving power cross with dual white+gold speed streaks and rotated fist
+      pxLimb(ctx, bodyDx + 2.5, torsoTopY + 3.2, bodyDx + 13, torsoTopY + 2.8, 5.4, pal.sleeveMain, pal.sleeveShadow);
+      celRolledCuff(ctx, bodyDx + 13.5, torsoTopY + 2.8, -0.05, 5.3, pal.sleeveMain, pal.sleeveShadow);
+      pxLimb(ctx, bodyDx + 14.5, torsoTopY + 2.8, bodyDx + maxReach, torsoTopY + 2.4, 4.8, skinTone, skinShade);
+      celFist(ctx, bodyDx + maxReach + 1.5, torsoTopY + 2.2, 6.8, skinTone, skinShade);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(bodyDx + 12, torsoTopY - 0.2, 13, 1.4);
+      ctx.fillStyle = 'rgba(250, 204, 21, 0.88)';
+      ctx.fillRect(bodyDx + 10, torsoTopY + 4.6, 13, 1.3);
+    } else {
+      // Torque follow-through recovery ready to wind up heavyPunch or kickFinisher
+      const rec = Math.max(0, 1 - (animProgress - 0.68) / 0.32);
+      const minExt = isComboChainActive ? 13 : 9.5;
+      const extX = bodyDx + minExt + rec * (maxReach - minExt);
+      const fistY = isComboChainActive ? torsoTopY + 2.5 : torsoTopY + 3.2;
+      pxLimb(ctx, bodyDx + 2, torsoTopY + 3.6, bodyDx + 7.5 + rec * 5, torsoTopY + 3.8, 5.1, pal.sleeveMain, pal.sleeveShadow);
+      celRolledCuff(ctx, bodyDx + 8 + rec * 5, torsoTopY + 3.8, -0.2 * (1 - rec), 5.1, pal.sleeveMain, pal.sleeveShadow);
+      pxLimb(ctx, bodyDx + 8.5 + rec * 5, torsoTopY + 3.8, extX, fistY, 4.6, skinTone, skinShade);
+      celFist(ctx, extX + 1, fistY - 0.2, 6.0, skinTone, skinShade);
     }
   } else if (anim === 'heavyPunch') {
-    if (animProgress < 0.32) {
-      // Antecipação: shoulder & fist pulled back taut before unleashing
-      const pull = Math.min(1, animProgress / 0.32);
-      const backX = bodyDx - 4 - pull * 6;
-      const fistY = torsoTopY + 5;
-      pxLimb(ctx, bodyDx + 1, torsoTopY + 4, backX + 2, fistY + 2, 5.2, pal.sleeveMain, pal.sleeveShadow);
-      celRolledCuff(ctx, backX + 2, fistY + 2, -0.3, 5.2, pal.sleeveMain, pal.sleeveShadow);
-      pxLimb(ctx, backX + 2, fistY + 2, backX, fistY, 4.8, skinTone, skinShade);
-      celFist(ctx, backX - 1.5, fistY, 6.5, skinTone, skinShade, '#020617');
-      if (pull > 0.55) {
+    if (animProgress < 0.30) {
+      // Antecipação: shoulder & fist pulled back deep with crackling kinetic glint
+      const pull = Math.min(1, animProgress / 0.30);
+      const backX = bodyDx - 4 - pull * 7;
+      const fistY = torsoTopY + 5.5;
+      pxLimb(ctx, bodyDx + 1, torsoTopY + 4, backX + 2, fistY + 2, 5.3, pal.sleeveMain, pal.sleeveShadow);
+      celRolledCuff(ctx, backX + 2, fistY + 2, -0.35, 5.3, pal.sleeveMain, pal.sleeveShadow);
+      pxLimb(ctx, backX + 2, fistY + 2, backX, fistY, 4.9, skinTone, skinShade);
+      celFist(ctx, backX - 1.5, fistY, 6.7, skinTone, skinShade, '#020617');
+      if (pull > 0.45) {
         ctx.fillStyle = '#fef08a';
-        ctx.fillRect(px(backX - 2), px(fistY - 5), 2, 2);
+        ctx.fillRect(px(backX - 3), px(fistY - 6), 2.5, 2.5);
+        ctx.fillStyle = '#f97316';
+        ctx.fillRect(px(backX - 6), px(fistY + 3), 2, 2);
       }
     } else if (animProgress < 0.68) {
-      // Impacto: explosive horizontal punch extension with rolled cuff & strong forearm
-      const reach = 29;
-      pxLimb(ctx, bodyDx + 2, torsoTopY + 3.5, bodyDx + 13, torsoTopY + 3.5, 5.5, pal.sleeveMain, pal.sleeveShadow);
-      celRolledCuff(ctx, bodyDx + 13.5, torsoTopY + 3.5, 0, 5.4, pal.sleeveMain, pal.sleeveShadow);
-      pxLimb(ctx, bodyDx + 14.5, torsoTopY + 3.5, bodyDx + reach, torsoTopY + 3, 5.0, skinTone, skinShade);
-      celFist(ctx, bodyDx + reach + 1.5, torsoTopY + 2.8, 7.2, skinTone, skinShade, '#020617');
+      // Impacto: explosive finisher punch with triple streaks + shockwave arc
+      const reach = 30.5;
+      ctx.strokeStyle = 'rgba(249, 115, 22, 0.85)';
+      ctx.lineWidth = 3.0;
+      ctx.beginPath();
+      ctx.arc(bodyDx + 19, torsoTopY + 3, 13, -0.95, 0.95);
+      ctx.stroke();
+      ctx.strokeStyle = '#fef08a';
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.arc(bodyDx + 21, torsoTopY + 3, 10, -0.8, 0.8);
+      ctx.stroke();
+
+      pxLimb(ctx, bodyDx + 2, torsoTopY + 3.5, bodyDx + 13.5, torsoTopY + 3.4, 5.6, pal.sleeveMain, pal.sleeveShadow);
+      celRolledCuff(ctx, bodyDx + 14, torsoTopY + 3.4, 0, 5.5, pal.sleeveMain, pal.sleeveShadow);
+      pxLimb(ctx, bodyDx + 15, torsoTopY + 3.4, bodyDx + reach, torsoTopY + 2.8, 5.1, skinTone, skinShade);
+      celFist(ctx, bodyDx + reach + 1.5, torsoTopY + 2.6, 7.6, skinTone, skinShade, '#020617');
       ctx.fillStyle = '#ffffff';
-      ctx.fillRect(bodyDx + 10, torsoTopY + 0.5, 16, 1.5);
+      ctx.fillRect(bodyDx + 9, torsoTopY + 0.2, 18, 1.6);
       ctx.fillStyle = '#facc15';
-      ctx.fillRect(bodyDx + 8, torsoTopY + 5.5, 15, 1.3);
+      ctx.fillRect(bodyDx + 7, torsoTopY + 5.6, 17, 1.4);
+      ctx.fillStyle = '#f97316';
+      ctx.fillRect(bodyDx + 11, torsoTopY + 7.6, 11, 1.2);
     } else {
-      // Recuo: smoothly retract arm to guard while tiny fading particles vanish
+      // Recuo: proud finisher follow-through retracting toward combat guard
       const rec = Math.max(0, 1 - (animProgress - 0.68) / 0.32);
-      const extX = bodyDx + 12 + rec * 11;
+      const extX = bodyDx + 12 + rec * 12;
       pxLimb(ctx, bodyDx + 2, torsoTopY + 4, bodyDx + 8 + rec * 3, torsoTopY + 4.5, 5.0, pal.sleeveMain, pal.sleeveShadow);
       celRolledCuff(ctx, bodyDx + 8.5 + rec * 3, torsoTopY + 4.5, 0, 5.0, pal.sleeveMain, pal.sleeveShadow);
       pxLimb(ctx, bodyDx + 9 + rec * 3, torsoTopY + 4.5, extX, torsoTopY + 3, 4.5, skinTone, skinShade);
-      celFist(ctx, extX + 1, torsoTopY + 2.8, 6.0, skinTone, skinShade, '#020617');
+      celFist(ctx, extX + 1, torsoTopY + 2.8, 6.2, skinTone, skinShade, '#020617');
       ctx.save();
       ctx.globalAlpha = rec * 0.85;
       ctx.fillStyle = '#fde047';
@@ -2661,6 +3182,45 @@ export function drawVectorPlayer(
       ctx.fillStyle = '#f97316';
       ctx.fillRect(px(extX + 2), px(torsoTopY + 7 + (1 - rec) * 3), 2, 2);
       ctx.restore();
+    }
+  } else if (anim === 'kick') {
+    if (animProgress < 0.70) {
+      // Snappy counterbalance whip during ground kick
+      const whip = animProgress >= 0.24 ? 1 : animProgress / 0.24;
+      const elbowX = bodyDx + 4 - whip * 9;
+      const elbowY = torsoTopY + 5 + whip * 2;
+      const fistX = bodyDx + 8 - whip * 15;
+      const fistY = torsoTopY + 3 + whip * 3;
+      pxLimb(ctx, bodyDx + 1, torsoTopY + 4, elbowX, elbowY, 4.8, pal.sleeveMain, pal.sleeveShadow);
+      celRolledCuff(ctx, elbowX, elbowY, -0.35, 4.8, pal.sleeveMain, pal.sleeveShadow);
+      pxLimb(ctx, elbowX, elbowY, fistX, fistY, 4.4, skinTone, skinShade);
+      celFist(ctx, fistX, fistY, 5.4, skinTone, skinShade);
+    } else {
+      const rec = Math.max(0, 1 - (animProgress - 0.70) / 0.30);
+      const targetX = isComboChainActive ? bodyDx + 12 : bodyDx + 9;
+      const fistX = targetX - rec * 16;
+      pxLimb(ctx, bodyDx + 2, torsoTopY + 4, bodyDx + 6 - rec * 11, torsoTopY + 6, 4.8, pal.sleeveMain, pal.sleeveShadow);
+      pxLimb(ctx, bodyDx + 6 - rec * 11, torsoTopY + 6, fistX, torsoTopY + 2.5, 4.4, skinTone, skinShade);
+      celFist(ctx, fistX, torsoTopY + 2.2, 5.4, skinTone, skinShade);
+    }
+  } else if (anim === 'kickFinisher') {
+    if (animProgress < 0.22) {
+      // Coiled spring crouch arms pulled across chest ready to whip
+      pxLimb(ctx, bodyDx + 2, torsoTopY + 4, bodyDx + 6, torsoTopY + 7, 4.9, pal.sleeveMain, pal.sleeveShadow);
+      pxLimb(ctx, bodyDx + 6, torsoTopY + 7, bodyDx + 10, torsoTopY + 3, 4.5, skinTone, skinShade);
+      celFist(ctx, bodyDx + 10.5, torsoTopY + 2.8, 5.6, skinTone, skinShade);
+    } else if (animProgress < 0.72) {
+      // Expressive wide martial-arts counterbalance fling during high roundhouse finisher
+      pxLimb(ctx, bodyDx, torsoTopY + 3.5, bodyDx - 8, torsoTopY + 2, 5.0, pal.sleeveMain, pal.sleeveShadow);
+      celRolledCuff(ctx, bodyDx - 8, torsoTopY + 2, -2.7, 5.0, pal.sleeveMain, pal.sleeveShadow);
+      pxLimb(ctx, bodyDx - 8, torsoTopY + 2, bodyDx - 13, torsoTopY + 0.5, 4.5, skinTone, skinShade);
+      celFist(ctx, bodyDx - 13.5, torsoTopY + 0.5, 5.8, skinTone, skinShade);
+    } else {
+      const rec = Math.max(0, 1 - (animProgress - 0.72) / 0.28);
+      const fistX = bodyDx + 11 - rec * 24;
+      pxLimb(ctx, bodyDx + 2, torsoTopY + 4, bodyDx + 6 - rec * 14, torsoTopY + 5, 4.9, pal.sleeveMain, pal.sleeveShadow);
+      pxLimb(ctx, bodyDx + 6 - rec * 14, torsoTopY + 5, fistX, torsoTopY + 1.5, 4.5, skinTone, skinShade);
+      celFist(ctx, fistX, torsoTopY + 1.2, 5.6, skinTone, skinShade);
     }
   } else if (anim === 'punch3') {
     pxLimb(ctx, bodyDx + 2, torsoTopY + 5, bodyDx + 10, torsoTopY - 2, 5, pal.sleeveMain, pal.sleeveShadow);
@@ -2672,60 +3232,180 @@ export function drawVectorPlayer(
     ctx.arc(bodyDx + 4, torsoTopY, 15, -1.2, 0.2);
     ctx.stroke();
   } else if (anim === 'cane') {
-    const pivotX = bodyDx + 3;
-    const pivotY = torsoTopY + 3;
-    const backAngle = -2.05;
-    const startAngle = -1.68;
-    const endAngle = 0.38;
-    let swingAngle = endAngle;
-    if (animProgress < 0.22) {
-      // Antecipação: cocking cane back high overhead
-      const ant = animProgress / 0.22;
-      swingAngle = -0.6 + (backAngle + 0.6) * ant;
-    } else if (animProgress < 0.70) {
-      // Impacto: fast downward arc whip
-      const imp = (animProgress - 0.22) / 0.48;
-      const ease = 1 - Math.pow(1 - imp, 3);
-      swingAngle = backAngle + (endAngle - backAngle) * ease;
-      ctx.strokeStyle = '#fde047';
-      ctx.lineWidth = 2.8;
+    const drawCaneShaft = (handX: number, handY: number, angle: number, length = 21) => {
+      ctx.save();
+      ctx.translate(handX, handY);
+      ctx.rotate(angle);
+      // Crisp 16-bit dark outline
+      ctx.strokeStyle = '#090d16';
+      ctx.lineWidth = 5.2;
+      ctx.lineCap = 'round';
       ctx.beginPath();
-      ctx.arc(pivotX, pivotY, 26, startAngle, swingAngle);
+      ctx.moveTo(-2, 0);
+      ctx.lineTo(length, 0);
+      ctx.arc(length, -3.2, 3.2, Math.PI * 0.5, Math.PI * 1.85, true);
       ctx.stroke();
+      // Rich mahogany wood shaft
+      ctx.strokeStyle = '#92400e';
+      ctx.lineWidth = 3.0;
+      ctx.beginPath();
+      ctx.moveTo(-2, 0);
+      ctx.lineTo(length, 0);
+      ctx.arc(length, -3.2, 3.2, Math.PI * 0.5, Math.PI * 1.85, true);
+      ctx.stroke();
+      // Top amber wood highlight + brass ferrule ring
+      ctx.strokeStyle = '#d97706';
+      ctx.lineWidth = 1.1;
+      ctx.beginPath();
+      ctx.moveTo(0, -0.7);
+      ctx.lineTo(length - 1, -0.7);
+      ctx.stroke();
+      ctx.fillStyle = '#fde047';
+      ctx.fillRect(length - 4, -1.3, 2, 2.6);
+      ctx.restore();
+    };
+
+    if (isFinalCaneSpin) {
+      if (animProgress < 0.16) {
+        // Quick rotary windup across body
+        const ant = animProgress / 0.16;
+        const elbowX = bodyDx - 4 * ant;
+        const elbowY = torsoTopY + 5;
+        const handX = bodyDx - 8 * ant;
+        const handY = torsoTopY + 3;
+        pxLimb(ctx, bodyDx + 1, torsoTopY + 4, elbowX, elbowY, 4.9, pal.sleeveMain, pal.sleeveShadow);
+        celRolledCuff(ctx, elbowX, elbowY, -2.5, 4.9, pal.sleeveMain, pal.sleeveShadow);
+        pxLimb(ctx, elbowX, elbowY, handX, handY, 4.4, skinTone, skinShade);
+        drawCaneShaft(handX, handY, -2.7, 21);
+        celFist(ctx, handX, handY, 5.5, skinTone, skinShade);
+      } else if (animProgress < 0.78) {
+        // 360-degree tornado rotary cane finisher (purely visual, no extra force)
+        const spinPhase = (animProgress - 0.16) / 0.62;
+        const spinRad = spinPhase * Math.PI * 2;
+        const extProj = Math.cos(spinRad);
+        const shoulderX = bodyDx + 2;
+        const shoulderY = torsoTopY + 4;
+        const handX = shoulderX + extProj * 13;
+        const handY = shoulderY + Math.sin(spinRad) * 2.5;
+        const elbowX = (shoulderX + handX) * 0.5;
+        const elbowY = (shoulderY + handY) * 0.5;
+
+        // 360-degree golden/orange tornado sweep rings
+        ctx.strokeStyle = 'rgba(249, 115, 22, 0.85)';
+        ctx.lineWidth = 3.4;
+        ctx.beginPath();
+        ctx.ellipse(bodyDx + 2, torsoTopY + 5, 34, 10, 0, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.strokeStyle = '#fde047';
+        ctx.lineWidth = 2.2;
+        ctx.beginPath();
+        ctx.ellipse(bodyDx + 2, torsoTopY + 5, 30, 8.2, 0, spinRad - 1.4, spinRad + 1.4);
+        ctx.stroke();
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 1.3;
+        ctx.beginPath();
+        ctx.ellipse(bodyDx + 2, torsoTopY + 5, 26, 6.6, 0, spinRad - 0.8, spinRad + 0.8);
+        ctx.stroke();
+
+        pxLimb(ctx, shoulderX, shoulderY, elbowX, elbowY, 4.9, pal.sleeveMain, pal.sleeveShadow);
+        celRolledCuff(ctx, elbowX, elbowY, extProj >= 0 ? 0 : Math.PI, 4.9, pal.sleeveMain, pal.sleeveShadow);
+        pxLimb(ctx, elbowX, elbowY, handX, handY, 4.5, skinTone, skinShade);
+        drawCaneShaft(handX, handY, extProj >= 0 ? 0.05 : Math.PI - 0.05, Math.max(11, Math.abs(extProj) * 23));
+        celFist(ctx, handX, handY, 5.6, skinTone, skinShade);
+      } else {
+        // Stylish follow-through return to horizontal chest guard
+        const rec = Math.min(1, (animProgress - 0.78) / 0.22);
+        const elbowX = bodyDx + 2 - rec * 2;
+        const elbowY = torsoTopY + 8;
+        const handX = bodyDx + 13 - rec * 4;
+        const handY = torsoTopY + 7;
+        pxLimb(ctx, bodyDx + 2, torsoTopY + 4, elbowX, elbowY, 4.8, pal.sleeveMain, pal.sleeveShadow);
+        celRolledCuff(ctx, elbowX, elbowY, 0.2, 4.8, pal.sleeveMain, pal.sleeveShadow);
+        pxLimb(ctx, elbowX, elbowY, handX, handY, 4.4, skinTone, skinShade);
+        drawCaneShaft(handX, handY, 0.04, 20);
+        celFist(ctx, handX, handY, 5.4, skinTone, skinShade);
+      }
+    } else if (animProgress < 0.22) {
+      // Frame 2: Arm cocked high overhead with hooked cane tucked diagonally behind head/back
+      const ant = animProgress / 0.22;
+      const shoulderX = bodyDx + 1;
+      const shoulderY = torsoTopY + 3;
+      const elbowX = bodyDx - 2 - ant * 2;
+      const elbowY = torsoTopY - 4 - ant * 4.5;
+      const handX = bodyDx - 7 - ant * 3.5;
+      const handY = torsoTopY - 2 - ant * 3;
+      pxLimb(ctx, shoulderX, shoulderY, elbowX, elbowY, 4.8, pal.sleeveMain, pal.sleeveShadow);
+      celRolledCuff(ctx, elbowX, elbowY, -2.1, 4.8, pal.sleeveMain, pal.sleeveShadow);
+      pxLimb(ctx, elbowX, elbowY, handX, handY, 4.4, skinTone, skinShade);
+      drawCaneShaft(handX, handY, 2.28 - (1 - ant) * 0.35, 19);
+      celFist(ctx, handX, handY, 5.4, skinTone, skinShade);
+    } else if (animProgress < 0.46) {
+      // Frame 3: Snapped high forward diagonal cane slash/thrust
+      const t = (animProgress - 0.22) / 0.24;
+      const ease = 1 - Math.pow(1 - t, 2);
+      const shoulderX = bodyDx + 2;
+      const shoulderY = torsoTopY + 3;
+      const slashAngle = -0.44 * ease - 1.2 * (1 - ease);
+      const handX = shoulderX + Math.cos(slashAngle) * 14;
+      const handY = shoulderY + Math.sin(slashAngle) * 14;
+      const elbowX = (shoulderX + handX) * 0.5;
+      const elbowY = (shoulderY + handY) * 0.5;
+
+      // High diagonal slash smear
+      ctx.strokeStyle = 'rgba(254, 240, 138, 0.85)';
+      ctx.lineWidth = 2.6;
+      ctx.beginPath();
+      ctx.arc(shoulderX, shoulderY, 27, -1.65, slashAngle + 0.1);
+      ctx.stroke();
+
+      pxLimb(ctx, shoulderX, shoulderY, elbowX, elbowY, 4.9, pal.sleeveMain, pal.sleeveShadow);
+      celRolledCuff(ctx, elbowX, elbowY, slashAngle, 4.9, pal.sleeveMain, pal.sleeveShadow);
+      pxLimb(ctx, elbowX, elbowY, handX, handY, 4.4, skinTone, skinShade);
+      drawCaneShaft(handX, handY, slashAngle, 21);
+      celFist(ctx, handX, handY, 5.5, skinTone, skinShade);
+    } else if (animProgress < 0.72) {
+      // Frame 4: Deep downward-forward lunge sweep with cane parallel/low at knee height
+      const t = (animProgress - 0.46) / 0.26;
+      const ease = 1 - Math.pow(1 - t, 2.4);
+      const shoulderX = bodyDx + 3;
+      const shoulderY = torsoTopY + 4;
+      const sweepAngle = -0.40 + 0.66 * ease;
+      const handX = shoulderX + Math.cos(sweepAngle) * 13.5;
+      const handY = shoulderY + Math.sin(sweepAngle) * 13.5 + 1.5;
+      const elbowX = shoulderX + Math.cos(sweepAngle) * 6.5;
+      const elbowY = shoulderY + Math.sin(sweepAngle) * 6.5 + 0.8;
+
+      // Wide blazing arc from high slash through low forward sweep
+      ctx.strokeStyle = '#fde047';
+      ctx.lineWidth = 3.0;
+      ctx.beginPath();
+      ctx.arc(shoulderX, shoulderY, 29, -0.55, sweepAngle + 0.14);
+      ctx.stroke();
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      ctx.arc(shoulderX, shoulderY, 26, -0.45, sweepAngle + 0.08);
+      ctx.stroke();
+
+      pxLimb(ctx, shoulderX, shoulderY, elbowX, elbowY, 4.9, pal.sleeveMain, pal.sleeveShadow);
+      celRolledCuff(ctx, elbowX, elbowY, sweepAngle, 4.9, pal.sleeveMain, pal.sleeveShadow);
+      pxLimb(ctx, elbowX, elbowY, handX, handY, 4.4, skinTone, skinShade);
+      drawCaneShaft(handX, handY, sweepAngle * 0.55, 21);
+      celFist(ctx, handX, handY, 5.5, skinTone, skinShade);
     } else {
-      // Recuo: follow-through easing back toward ready stance
-      const rec = (animProgress - 0.70) / 0.30;
-      swingAngle = endAngle - rec * 0.48;
-    }
-
-    ctx.save();
-    ctx.translate(pivotX, pivotY);
-    ctx.rotate(swingAngle);
-    pxLimb(ctx, 0, 0, 10, 0, 4.5, '#f1b586', '#c68353');
-    ctx.strokeStyle = '#090d16';
-    ctx.lineWidth = 5;
-    ctx.beginPath();
-    ctx.moveTo(9, 0);
-    ctx.lineTo(29, 0);
-    ctx.arc(29, -3, 3, Math.PI * 0.5, Math.PI * 1.8, true);
-    ctx.stroke();
-    ctx.strokeStyle = '#92400e';
-    ctx.lineWidth = 3;
-    ctx.beginPath();
-    ctx.moveTo(9, 0);
-    ctx.lineTo(29, 0);
-    ctx.arc(29, -3, 3, Math.PI * 0.5, Math.PI * 1.8, true);
-    ctx.stroke();
-    ctx.restore();
-
-    if (animProgress >= 0.44 && animProgress <= 0.74) {
-      drawImpactFlash(
-        ctx,
-        pivotX + Math.cos(endAngle) * 30,
-        pivotY + Math.sin(endAngle) * 30,
-        (animProgress - 0.44) / 0.30,
-        false
-      );
+      // Frames 5-7: Pull cane horizontally back across chest/waist into tight guard recovery
+      const rec = Math.min(1, (animProgress - 0.72) / 0.28);
+      const shoulderX = bodyDx + 2;
+      const shoulderY = torsoTopY + 4;
+      const elbowX = bodyDx + 1 - rec * 2;
+      const elbowY = torsoTopY + 9;
+      const handX = bodyDx + 13 - rec * 4;
+      const handY = torsoTopY + 8 - rec * 1;
+      pxLimb(ctx, shoulderX, shoulderY, elbowX, elbowY, 4.8, pal.sleeveMain, pal.sleeveShadow);
+      celRolledCuff(ctx, elbowX, elbowY, 0.2, 4.8, pal.sleeveMain, pal.sleeveShadow);
+      pxLimb(ctx, elbowX, elbowY, handX, handY, 4.4, skinTone, skinShade);
+      drawCaneShaft(handX, handY, 0.04, 20);
+      celFist(ctx, handX, handY, 5.4, skinTone, skinShade);
     }
   } else if (anim === 'finisherPiledriver') {
     if (animProgress < 0.22) {
@@ -2817,7 +3497,6 @@ export function drawVectorPlayer(
     ctx.restore();
 
     if (prog > 0.18 && prog < 0.85) {
-      drawImpactFlash(ctx, tipX + 5, tipY, (prog - 0.18) / 0.67, true);
       const noteOffsets = [0.35, 0.62, 0.86];
       noteOffsets.forEach((nt, idx) => {
         const nx = px(handX + whipLen * nt);
@@ -3025,38 +3704,71 @@ export function drawVectorPlayer(
     ctx.fillStyle = 'rgba(248, 250, 252, 0.9)';
     ctx.fillRect(px(cupX + 1.5 + steamTick), px(cupY - 4), 1.5, 2.5);
     ctx.fillRect(px(cupX + 4.5 - steamTick), px(cupY - 7), 1.5, 2.5);
-  } else if (anim === 'fightStance') {
-    const fBob = Math.sin(auraClock * 9.5) > 0 ? 1 : -1;
-    pxLimb(ctx, bodyDx + 2, torsoTopY + 4, bodyDx + 7, torsoTopY + 6 + fBob, 4.8, pal.sleeveMain, pal.sleeveShadow);
-    celRolledCuff(ctx, bodyDx + 7.2, torsoTopY + 5.8 + fBob, -0.5, 4.8, pal.sleeveMain, pal.sleeveShadow);
-    pxLimb(ctx, bodyDx + 7.5, torsoTopY + 5.5 + fBob, bodyDx + 13, torsoTopY + 1 + fBob, 4.4, skinTone, skinShade);
-    celFist(ctx, bodyDx + 13.5, torsoTopY + 0.5 + fBob, 5.6, skinTone, skinShade);
+  } else if (anim === 'fightStance' || isComboHoldGuard) {
+    const fBob = isComboHoldGuard ? 0 : Math.sin(auraClock * 9.5) > 0 ? 1 : -1;
+    pxLimb(ctx, bodyDx + 2, torsoTopY + 4, bodyDx + 7, torsoTopY + 5.8 + fBob, 4.8, pal.sleeveMain, pal.sleeveShadow);
+    celRolledCuff(ctx, bodyDx + 7.2, torsoTopY + 5.6 + fBob, -0.5, 4.8, pal.sleeveMain, pal.sleeveShadow);
+    pxLimb(ctx, bodyDx + 7.5, torsoTopY + 5.3 + fBob, bodyDx + 12.8, torsoTopY + 1.5 + fBob, 4.4, skinTone, skinShade);
+    celFist(ctx, bodyDx + 13.3, torsoTopY + 1 + fBob, 5.6, skinTone, skinShade);
   } else if (anim === 'jumpPunch') {
-    if (animProgress < 0.25) {
-      // Quick air prep: elbow and fist coiled at ribs
-      const pull = animProgress / 0.25;
-      const backX = bodyDx - 2.5 * pull;
-      pxLimb(ctx, bodyDx + 2, torsoTopY + 4, backX - 1, torsoTopY + 6.5, 5.0, pal.sleeveMain, pal.sleeveShadow);
-      celRolledCuff(ctx, backX - 1, torsoTopY + 6.5, -0.25, 5.0, pal.sleeveMain, pal.sleeveShadow);
-      pxLimb(ctx, backX - 1, torsoTopY + 6.5, backX + 2.5, torsoTopY + 4, 4.5, skinTone, skinShade);
-      celFist(ctx, backX + 3.5, torsoTopY + 3.8, 5.8, skinTone, skinShade);
-    } else if (animProgress < 0.72) {
-      // Snapped forward airborne fist extension with speed smear
-      const maxReach = 24;
-      pxLimb(ctx, bodyDx + 2, torsoTopY + 3.5, bodyDx + 11.5, torsoTopY + 3.8, 5.2, pal.sleeveMain, pal.sleeveShadow);
-      celRolledCuff(ctx, bodyDx + 12, torsoTopY + 3.8, 0, 5.1, pal.sleeveMain, pal.sleeveShadow);
-      pxLimb(ctx, bodyDx + 13, torsoTopY + 3.8, bodyDx + maxReach, torsoTopY + 3.6, 4.6, skinTone, skinShade);
-      celFist(ctx, bodyDx + maxReach + 1.5, torsoTopY + 3.4, 6.4, skinTone, skinShade);
-      ctx.fillStyle = 'rgba(254, 240, 138, 0.85)';
-      ctx.fillRect(bodyDx + 11, torsoTopY + 0.6, 12, 1.3);
+    if (animProgress < 0.18) {
+      // Quick Shoryuken coil prep: lead elbow & fist tucked low by hip/ribs
+      const pull = animProgress / 0.18;
+      const elbowX = bodyDx - 1 - pull * 1.5;
+      const elbowY = torsoTopY + 8 + pull * 2;
+      const fistX = bodyDx + 5;
+      const fistY = hipY - 1;
+      pxLimb(ctx, bodyDx + 2, torsoTopY + 4, elbowX, elbowY, 5.0, pal.sleeveMain, pal.sleeveShadow);
+      celRolledCuff(ctx, elbowX, elbowY, 0.25, 5.0, pal.sleeveMain, pal.sleeveShadow);
+      pxLimb(ctx, elbowX, elbowY, fistX, fistY, 4.5, skinTone, skinShade);
+      celFist(ctx, fistX + 0.5, fistY, 5.8, skinTone, skinShade);
+    } else if (animProgress < 0.74) {
+      // Rising Shoryuken Dragon Uppercut: vertical skyward punch + blazing crescent & speed streaks
+      const sub = Math.min(1, (animProgress - 0.18) / 0.18);
+      const fistX = bodyDx + 7.5;
+      const fistY = headY - 8 - sub * 8.5;
+      const elbowX = bodyDx + 6;
+      const elbowY = torsoTopY - 3 - sub * 3;
+
+      // Iconic rising Shoryuken crescent arc (gold core + white flash + cyan edge)
+      ctx.strokeStyle = 'rgba(56, 189, 248, 0.75)';
+      ctx.lineWidth = 4.2;
+      ctx.beginPath();
+      ctx.arc(bodyDx + 1, torsoTopY - 4, 21, -1.55, 0.35);
+      ctx.stroke();
+      ctx.strokeStyle = '#fde047';
+      ctx.lineWidth = 2.8;
+      ctx.beginPath();
+      ctx.arc(bodyDx + 1, torsoTopY - 4, 18.5, -1.48, 0.28);
+      ctx.stroke();
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      ctx.arc(bodyDx + 1, torsoTopY - 4, 16.5, -1.4, 0.18);
+      ctx.stroke();
+
+      // Vertical 16-bit rising speed streaks
+      ctx.fillStyle = 'rgba(254, 240, 138, 0.88)';
+      ctx.fillRect(px(fistX - 4), px(fistY + 6), 1.5, 13);
+      ctx.fillRect(px(fistX + 4), px(fistY + 4), 1.5, 15);
+      ctx.fillStyle = 'rgba(125, 211, 252, 0.85)';
+      ctx.fillRect(px(bodyDx - 2), px(torsoTopY - 4), 1.5, 14);
+
+      pxLimb(ctx, bodyDx + 2, torsoTopY + 2, elbowX, elbowY, 5.2, pal.sleeveMain, pal.sleeveShadow);
+      celRolledCuff(ctx, elbowX, elbowY, -Math.PI * 0.48, 5.1, pal.sleeveMain, pal.sleeveShadow);
+      pxLimb(ctx, elbowX, elbowY, fistX, fistY + 2, 4.7, skinTone, skinShade);
+      celFist(ctx, fistX, fistY, 6.6, skinTone, skinShade);
     } else {
-      // Natural airborne recovery back toward guard
-      const rec = Math.max(0, 1 - (animProgress - 0.72) / 0.28);
-      const extX = bodyDx + 9 + rec * 14;
-      pxLimb(ctx, bodyDx + 2, torsoTopY + 4, bodyDx + 6 + rec * 5, torsoTopY + 4.2, 5.0, pal.sleeveMain, pal.sleeveShadow);
-      celRolledCuff(ctx, bodyDx + 6.5 + rec * 5, torsoTopY + 4.2, 0, 5.0, pal.sleeveMain, pal.sleeveShadow);
-      pxLimb(ctx, bodyDx + 7 + rec * 5, torsoTopY + 4.2, extX, torsoTopY + 3.8, 4.5, skinTone, skinShade);
-      celFist(ctx, extX + 1, torsoTopY + 3.5, 5.8, skinTone, skinShade);
+      // Natural airborne recovery descending back toward guard
+      const rec = Math.max(0, 1 - (animProgress - 0.74) / 0.26);
+      const elbowX = bodyDx + 7 - (1 - rec) * 1;
+      const elbowY = torsoTopY + 5 - rec * 11;
+      const fistX = bodyDx + 10 - rec * 2.5;
+      const fistY = torsoTopY - 1 - rec * 15;
+      pxLimb(ctx, bodyDx + 2, torsoTopY + 3, elbowX, elbowY, 5.0, pal.sleeveMain, pal.sleeveShadow);
+      celRolledCuff(ctx, elbowX, elbowY, -0.9 * rec, 5.0, pal.sleeveMain, pal.sleeveShadow);
+      pxLimb(ctx, elbowX, elbowY, fistX, fistY + 1, 4.5, skinTone, skinShade);
+      celFist(ctx, fistX, fistY, 5.8, skinTone, skinShade);
     }
   } else if (anim === 'jumpKick' || anim === 'cranePrep' || anim === 'craneKick' || anim === 'trinityFreeze') {
     pxLimb(ctx, bodyDx + 3, torsoTopY + 3, bodyDx + 11, torsoTopY - 3, 4.5, pal.sleeveMain, pal.sleeveShadow);

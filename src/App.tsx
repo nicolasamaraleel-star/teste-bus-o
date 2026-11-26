@@ -54,6 +54,8 @@ const INITIAL_HUD: HudSnapshot = {
   enemiesDefeated: 0,
   comboStreak: 0,
   comboMultiplier: 1,
+  perfectHitActive: false,
+  perfectHitSeq: 0,
   credits: 0,
   ticketCost: 2,
   ticketValidated: false,
@@ -119,6 +121,11 @@ function GameShell() {
   const [achievementProgress, setAchievementProgress] = useState<AchievementProgressState>(() =>
     loadAchievementProgress()
   );
+  const [edgeImpactSeq, setEdgeImpactSeq] = useState(0);
+  const [edgeImpactActive, setEdgeImpactActive] = useState(false);
+  const prevComboStreakRef = useRef(0);
+  const prevBestHitChainRef = useRef(0);
+  const edgeImpactTimeoutRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (!profile) return;
@@ -157,6 +164,48 @@ function GameShell() {
       musicManager.stop();
       engine.destroy();
       engineRef.current = null;
+    };
+  }, []);
+
+  // Trigger screen-space edge flares & viewport shake when comboStreak or bestHitChain climbs above 10x
+  useEffect(() => {
+    if (hud.gameState !== 'PLAYING') {
+      prevComboStreakRef.current = hud.comboStreak;
+      prevBestHitChainRef.current = hud.bestHitChain;
+      setEdgeImpactActive(false);
+      if (edgeImpactTimeoutRef.current !== null) {
+        window.clearTimeout(edgeImpactTimeoutRef.current);
+        edgeImpactTimeoutRef.current = null;
+      }
+      return;
+    }
+
+    const streakClimbedOverTen =
+      hud.comboStreak > 10 && hud.comboStreak > prevComboStreakRef.current;
+    const bestChainClimbedOverTen =
+      hud.bestHitChain > 10 && hud.bestHitChain > prevBestHitChainRef.current;
+
+    prevComboStreakRef.current = hud.comboStreak;
+    prevBestHitChainRef.current = hud.bestHitChain;
+
+    if (streakClimbedOverTen || bestChainClimbedOverTen) {
+      setEdgeImpactSeq((seq) => seq + 1);
+      setEdgeImpactActive(true);
+      if (edgeImpactTimeoutRef.current !== null) {
+        window.clearTimeout(edgeImpactTimeoutRef.current);
+      }
+      edgeImpactTimeoutRef.current = window.setTimeout(() => {
+        setEdgeImpactActive(false);
+        edgeImpactTimeoutRef.current = null;
+      }, 380);
+    }
+  }, [hud.gameState, hud.comboStreak, hud.bestHitChain]);
+
+  useEffect(() => {
+    return () => {
+      if (edgeImpactTimeoutRef.current !== null) {
+        window.clearTimeout(edgeImpactTimeoutRef.current);
+      }
     };
   }, []);
 
@@ -297,12 +346,27 @@ function GameShell() {
   return (
     <main className="relative w-screen h-screen overflow-hidden bg-[#090d16] flex items-center justify-center">
       {/* 2.5D Belt-Scroller Gameplay Viewport */}
-      <div className="relative w-full h-full flex items-center justify-center">
+      <div
+        className={`relative w-full h-full flex items-center justify-center ${
+          edgeImpactActive
+            ? edgeImpactSeq % 2 === 0
+              ? 'animate-viewport-combo-shake-a'
+              : 'animate-viewport-combo-shake-b'
+            : ''
+        }`}
+      >
         <canvas
           ref={canvasRef}
           style={{ imageRendering: 'pixelated' }}
           className="w-full h-full object-contain bg-[#0b1120]"
         />
+        {edgeImpactActive && (
+          <div
+            key={edgeImpactSeq}
+            data-intense={hud.comboStreak >= 20 || hud.bestHitChain >= 20 ? 'true' : 'false'}
+            className="viewport-combo-flare pointer-events-none absolute inset-0 z-10"
+          />
+        )}
       </div>
 
       {/* Title Screen */}

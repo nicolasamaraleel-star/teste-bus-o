@@ -928,24 +928,36 @@ export function GameHUD({
           </div>
 
           {/* Mobile/Tablet Dynamic Cyan/Magenta Combo Burst (Screenshot 2) */}
-          {displayHits > 0 && (
-            <div
-              key={displayHits}
-              className="animate-combo-pop pointer-events-none select-none flex flex-col items-end pr-0.5 mt-0.5 -skew-x-6"
-            >
-              <div className="flex items-baseline gap-1 px-2 py-0.5 rounded bg-gradient-to-r from-[#06b6d4]/90 to-[#0284c7]/85 border border-[#67e8f9] shadow-[0_2px_0_#090d16]">
-                <span className="font-arcade-display text-lg sm:text-2xl leading-none text-[#facc15] drop-shadow-[0_2px_0_#090d16] tabular-nums">
-                  {displayHits}
+          {(hud.perfectHitActive || displayHits > 0) && (
+            <div className="pointer-events-none select-none flex flex-col items-end pr-0.5 mt-0.5">
+              {hud.perfectHitActive && (
+                <span
+                  key={`perf-m-${hud.perfectHitSeq}`}
+                  className="perfect-hit-banner font-arcade-display italic text-xs sm:text-sm tracking-wider leading-none mb-1 pr-1"
+                >
+                  PERFEITO!
                 </span>
-                <span className="font-arcade-display text-xs sm:text-sm text-white drop-shadow-[0_1.5px_0_#090d16]">
-                  HITS
-                </span>
-              </div>
-              <div className="-mt-1 mr-1 px-2 py-0.5 rounded bg-gradient-to-r from-[#ec4899] to-[#db2777] border border-[#090d16] shadow-[0_2px_0_#090d16]">
-                <span className="font-arcade-display italic text-[10px] sm:text-xs text-white leading-none">
-                  {hud.comboMultiplier >= 10 ? `COMBO ×${hud.comboMultiplier}!` : 'COMBO!'}
-                </span>
-              </div>
+              )}
+              {displayHits > 0 && (
+                <div
+                  key={displayHits}
+                  className="animate-combo-pop flex flex-col items-end -skew-x-6"
+                >
+                  <div className="flex items-baseline gap-1 px-2 py-0.5 rounded bg-gradient-to-r from-[#06b6d4]/90 to-[#0284c7]/85 border border-[#67e8f9] shadow-[0_2px_0_#090d16]">
+                    <span className="font-arcade-display text-lg sm:text-2xl leading-none text-[#facc15] drop-shadow-[0_2px_0_#090d16] tabular-nums">
+                      {displayHits}
+                    </span>
+                    <span className="font-arcade-display text-xs sm:text-sm text-white drop-shadow-[0_1.5px_0_#090d16]">
+                      HITS
+                    </span>
+                  </div>
+                  <div className="-mt-1 mr-1 px-2 py-0.5 rounded bg-gradient-to-r from-[#ec4899] to-[#db2777] border border-[#090d16] shadow-[0_2px_0_#090d16]">
+                    <span className="font-arcade-display italic text-[10px] sm:text-xs text-white leading-none">
+                      {hud.comboMultiplier >= 10 ? `COMBO ×${hud.comboMultiplier}!` : 'COMBO!'}
+                    </span>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -1087,7 +1099,15 @@ export function GameHUD({
       {/* ===================================================================== */}
       <div className="hud-desktop-only items-end justify-between w-full pt-1">
         {/* Bottom-Left: Jagged Red Comic Combo Burst */}
-        <div className="min-h-[46px] flex items-end">
+        <div className="min-h-[46px] flex flex-col items-start justify-end">
+          {hud.perfectHitActive && (
+            <span
+              key={`perf-d-${hud.perfectHitSeq}`}
+              className="perfect-hit-banner pointer-events-none select-none font-arcade-display italic text-sm xl:text-base tracking-wider leading-none mb-1.5 pl-1"
+            >
+              PERFEITO!
+            </span>
+          )}
           {displayHits > 0 && (
             <div
               key={displayHits}

@@ -238,7 +238,9 @@ export interface GroundHazard {
   life: number;
 }
 
-export type ParticleKind = 'pixel' | 'spark' | 'shard';
+export type ParticleKind = 'pixel' | 'spark' | 'shard' | 'kickTrail';
+
+export type ImpactFlashKind = 'jab' | 'heavy' | 'kick' | 'uppercut' | 'finisher' | 'blocked';
 
 export interface Particle {
   x: number;
@@ -332,6 +334,8 @@ export interface HudSnapshot {
   enemiesDefeated: number;
   comboStreak: number;
   comboMultiplier: number;
+  perfectHitActive: boolean;
+  perfectHitSeq: number;
   credits: number;
   ticketCost: number;
   ticketValidated: boolean;

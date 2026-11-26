@@ -26,6 +26,7 @@ import { getActiveShopLoadout } from './shop';
 import {
   drawBossFinisherEffect,
   drawFullScreenKoAnimation,
+  drawGroundShockwave,
   drawImpactFlash,
   drawPixelParticle,
   drawVectorBusInterior,
@@ -47,6 +48,7 @@ import {
   GameState,
   GroundHazard,
   HudSnapshot,
+  ImpactFlashKind,
   ItemType,
   LineDefinition,
   Particle,
@@ -75,6 +77,18 @@ interface ImpactFlash {
   y: number;
   life: number;
   maxLife: number;
+  strong: boolean;
+  kind?: ImpactFlashKind;
+  dir?: 1 | -1;
+}
+
+interface GroundShockwave {
+  x: number;
+  y: number;
+  life: number;
+  maxLife: number;
+  radius: number;
+  color: string;
   strong: boolean;
 }
 
@@ -145,6 +159,10 @@ export class BusBeatEmUpEngine {
   }> = [];
   private specialReadySpawnAcc = 0;
   private hitstopTimer = 0;
+  private hitstopFrames = 0;
+  private comboFinisherSlowTimer = 0;
+  private comboFinisherSlowMax = 0.085;
+  private comboFinisherSlowMinScale = 0.52;
   private bossBulletTimeTimer = 0;
   private bossKoFlashTimer = 0;
   private bossKoTrailTimer = 0;
@@ -156,6 +174,7 @@ export class BusBeatEmUpEngine {
   private shieldBreakHintTimer = 0;
   private bossFinisherEffects: BossFinisherEffect[] = [];
   private impactFlashes: ImpactFlash[] = [];
+  private groundShockwaves: GroundShockwave[] = [];
   private bossKoOverlay: {
     life: number;
     maxLife: number;
@@ -181,6 +200,12 @@ export class BusBeatEmUpEngine {
   private bufferTimer = 0;
   private airAttackUsed = false;
   private victoryPoseCycle = 0;
+  private lastComboAttackAnim: PlayerAnimState = 'idle';
+  private activeAttackPrevAnim: PlayerAnimState = 'idle';
+  private caneSpinVisual = false;
+  private attackActiveTicks = 0;
+  private perfectHitTimer = 0;
+  private perfectHitSeq = 0;
   private levelClearTransition: { timer: number; pose: PlayerAnimState } | null = null;
   private hitChainTimer = 0;
   private staticRenderedState: GameState | null = null;
@@ -414,6 +439,7 @@ export class BusBeatEmUpEngine {
     this.floatingTexts = [];
     this.bossFinisherEffects = [];
     this.impactFlashes = [];
+    this.groundShockwaves = [];
     this.bossKoOverlay = null;
     this.pendingBossSpawns = [];
     this.bossFinisherState = null;
@@ -426,6 +452,11 @@ export class BusBeatEmUpEngine {
     this.comboEdgeParticles = [];
     this.specialReadyParticles = [];
     this.specialReadySpawnAcc = 0;
+    this.hitstopTimer = 0;
+    this.hitstopFrames = 0;
+    this.comboFinisherSlowTimer = 0;
+    this.comboFinisherSlowMax = 0.085;
+    this.comboFinisherSlowMinScale = 0.52;
     this.bossBulletTimeTimer = 0;
     this.bossKoFlashTimer = 0;
     this.bossKoTrailTimer = 0;
@@ -475,6 +506,11 @@ export class BusBeatEmUpEngine {
     this.player.vz = 0;
     this.player.facing = 1;
     this.setPlayerAnim('idle', 0);
+    this.lastComboAttackAnim = 'idle';
+    this.activeAttackPrevAnim = 'idle';
+    this.caneSpinVisual = false;
+    this.attackActiveTicks = 0;
+    this.perfectHitTimer = 0;
     this.airAttackUsed = false;
     this.levelClearTransition = null;
     this.clearBufferedComboInput();
@@ -749,6 +785,7 @@ export class BusBeatEmUpEngine {
         this.triggerShake(0.36, 7);
         this.spawnParticles(p.x, p.y, p.z + 18, '#38bdf8', 24);
         this.spawnParticles(p.x, p.y, p.z + 18, '#facc15', 16);
+        this.spawnGroundShockwave(p.x, p.y, 44, '#38bdf8', true);
         const ringRadius = Math.round(36 * (1 + this.shopLoadout.specialReachBonus));
         for (const dir of [-1, 1] as const) {
           this.projectiles.push({
@@ -824,6 +861,7 @@ export class BusBeatEmUpEngine {
         this.clearBufferedComboInput();
         if (action === 'punch') {
           this.setPlayerAnim('jumpPunch', 0.30);
+          p.vz = Math.max(p.vz, 175);
           p.attackHasHit = false;
           audio.playPunch();
         } else {
@@ -874,10 +912,20 @@ export class BusBeatEmUpEngine {
       this.bagParryCount++;
       this.trackDailyMission('bag_parries', 1);
       audio.playBlock();
+      this.impactFlashes.push({
+        x: p.x + p.facing * 10,
+        y: p.y - p.z - 20,
+        life: 0.14,
+        maxLife: 0.14,
+        strong: true,
+        kind: 'blocked',
+        dir: p.facing,
+      });
       this.spawnHitSparks(p.x + p.facing * 10, p.y, p.z + 20, p.facing, {
         target: 'barrier',
         strong: true,
         blocked: true,
+        attackType: 'blocked',
       });
       if (this.bagParryCount >= 3) {
         this.unlockAchievement('ninja_mochila');
@@ -927,13 +975,17 @@ export class BusBeatEmUpEngine {
       life: 0.22,
       maxLife: 0.22,
       strong: true,
+      kind: 'finisher',
+      dir: p.facing,
     });
+    this.spawnGroundShockwave(p.x, p.y, 48, p.rageTimer > 0 ? '#ef4444' : '#facc15', true);
     this.spawnParticles(p.x, p.y, 6, '#fde047', 12);
     this.spawnParticles(p.x, p.y, 8, p.rageTimer > 0 ? '#ef4444' : '#f97316', 10);
     this.spawnHitSparks(p.x, p.y, 6, p.facing, {
       target: 'turnstile_boss',
       strong: true,
       finisher: true,
+      attackType: 'finisher',
     });
 
     let hitCount = 0;
@@ -958,17 +1010,20 @@ export class BusBeatEmUpEngine {
       hitCount++;
 
       this.impactFlashes.push({
-        x: e.x,
+        x: e.x - kbDir * 5,
         y: e.y - e.z - 22,
         life: 0.16,
         maxLife: 0.16,
         strong: true,
+        kind: 'finisher',
+        dir: kbDir as 1 | -1,
       });
-      this.spawnHitSparks(e.x - kbDir * 4, e.y, e.z + 20, kbDir, {
+      this.spawnHitSparks(e.x - kbDir * 5, e.y, e.z + 20, kbDir, {
         target: e.isBoss ? 'turnstile_boss' : 'passenger',
         bossType: e.type,
         strong: true,
         finisher: true,
+        attackType: 'finisher',
       });
       this.addFloatingText(`-${damage}`, e.x, e.y, e.z + 36, '#fde047');
       p.score += damage * 3;
@@ -1338,32 +1393,38 @@ export class BusBeatEmUpEngine {
         const x2 = x1 + Math.cos(ang + 0.85) * (len * 0.9);
         const y2 = y1 + Math.sin(ang + 0.85) * (len * 0.9) - midJitter * 0.6;
 
-        ctx.globalAlpha = alpha * 0.9;
-        ctx.strokeStyle = sp.color;
-        ctx.lineWidth = 1.35;
+        // Subtle dark-cyan contrast edge so electric arcs read cleanly over any background
+        ctx.globalAlpha = alpha * 0.45;
+        ctx.strokeStyle = '#0369a1';
+        ctx.lineWidth = 2.4;
         ctx.beginPath();
         ctx.moveTo(sx, sy);
         ctx.lineTo(x1, y1);
         ctx.lineTo(x2, y2);
         ctx.stroke();
 
-        ctx.globalAlpha = alpha * 0.75;
+        ctx.globalAlpha = alpha * 0.94;
+        ctx.strokeStyle = sp.color;
+        ctx.lineWidth = 1.35;
+        ctx.stroke();
+
+        ctx.globalAlpha = alpha * 0.85;
         ctx.strokeStyle = '#ffffff';
-        ctx.lineWidth = 0.65;
+        ctx.lineWidth = 0.7;
         ctx.stroke();
       } else {
-        ctx.globalAlpha = alpha * 0.28;
-        ctx.fillStyle = '#38bdf8';
+        ctx.globalAlpha = alpha * 0.34;
+        ctx.fillStyle = '#0284c7';
         ctx.beginPath();
-        ctx.arc(sx, sy, 2.3, 0, Math.PI * 2);
+        ctx.arc(sx, sy, 2.4, 0, Math.PI * 2);
         ctx.fill();
 
-        ctx.globalAlpha = alpha * 0.95;
+        ctx.globalAlpha = alpha * 0.96;
         ctx.fillStyle = sp.color;
         ctx.fillRect(sx - 0.8, sy - 0.8, 1.6, 1.6);
 
         ctx.fillStyle = '#ffffff';
-        ctx.fillRect(sx - 0.4, sy - 0.4, 0.8, 0.8);
+        ctx.fillRect(sx - 0.45, sy - 0.45, 0.9, 0.9);
       }
     }
 
@@ -1542,6 +1603,28 @@ export class BusBeatEmUpEngine {
     }
   }
 
+  private spawnGroundShockwave(
+    x: number,
+    y: number,
+    radius: number,
+    color: string,
+    strong = false
+  ) {
+    if (this.groundShockwaves.length >= 10) {
+      this.groundShockwaves.shift();
+    }
+    const maxLife = strong ? 0.24 : 0.19;
+    this.groundShockwaves.push({
+      x,
+      y,
+      life: maxLife,
+      maxLife,
+      radius,
+      color,
+      strong,
+    });
+  }
+
   private spawnHitSparks(
     x: number,
     y: number,
@@ -1553,28 +1636,54 @@ export class BusBeatEmUpEngine {
       strong?: boolean;
       finisher?: boolean;
       blocked?: boolean;
+      attackType?: ImpactFlashKind | 'cane' | 'special';
+      kickTrail?: boolean;
     }
   ) {
     const isBoss = options.target === 'turnstile_boss';
     const isBarrier = options.target === 'barrier';
     const isPlayer = options.target === 'player';
+    const isBlocked = Boolean(options.blocked || options.attackType === 'blocked');
+    const atk = options.attackType ?? (options.finisher ? 'finisher' : options.strong ? 'heavy' : 'jab');
+    const reduced = this.isReducedMotionPreferred();
     const baseDir = dir >= 0 ? 1 : -1;
 
-    const sparkCount = isBoss
-      ? options.finisher
-        ? 20
-        : options.strong
-          ? 15
-          : 11
-      : isBarrier
-        ? 10
-        : isPlayer
-          ? 7
-          : options.finisher
-            ? 14
-            : options.strong
-              ? 10
-              : 7;
+    const rawCount = isBlocked
+      ? 6
+      : isBoss
+        ? options.finisher
+          ? 16
+          : options.strong
+            ? 12
+            : 9
+        : isBarrier
+          ? 8
+          : isPlayer
+            ? 7
+            : options.finisher
+              ? 13
+              : options.strong
+                ? 9
+                : 6;
+    const sparkCount = reduced ? Math.max(3, Math.round(rawCount * 0.55)) : rawCount;
+
+    const blockedPalette: Array<{ primary: string; cool: string }> = [
+      { primary: '#e0f2fe', cool: '#0284c7' },
+      { primary: '#7dd3fc', cool: '#334155' },
+      { primary: '#cbd5e1', cool: '#475569' },
+    ];
+
+    const uppercutPalette: Array<{ primary: string; cool: string }> = [
+      { primary: '#fef08a', cool: '#0284c7' },
+      { primary: '#38bdf8', cool: '#f97316' },
+      { primary: '#fde047', cool: '#ea580c' },
+    ];
+
+    const kickPalette: Array<{ primary: string; cool: string }> = [
+      { primary: '#fde047', cool: '#f97316' },
+      { primary: '#bae6fd', cool: '#0284c7' },
+      { primary: '#fb923c', cool: '#dc2626' },
+    ];
 
     const bossPalette: Array<{ primary: string; cool: string }> =
       options.bossType === 'boss_fiscal_chefe'
@@ -1608,69 +1717,142 @@ export class BusBeatEmUpEngine {
       { primary: '#fb7185', cool: '#be123c' },
     ];
 
-    const palette = isBoss
-      ? bossPalette
-      : isBarrier
-        ? barrierPalette
-        : isPlayer
-          ? playerPalette
-          : passengerPalette;
+    const palette = isBlocked
+      ? blockedPalette
+      : atk === 'uppercut'
+        ? uppercutPalette
+        : atk === 'kick'
+          ? kickPalette
+          : isBoss
+            ? bossPalette
+            : isBarrier
+              ? barrierPalette
+              : isPlayer
+                ? playerPalette
+                : passengerPalette;
 
     for (let i = 0; i < sparkCount; i++) {
-      // Mostly directional cone along hit knockback + 25% metallic ricochet spray
-      const ricochet = isBoss || isBarrier ? Math.random() < 0.32 : Math.random() < 0.2;
-      const aimDir = ricochet ? -baseDir : baseDir;
-      const spread = (Math.random() - 0.5) * (isBoss ? 1.55 : 1.35);
-      const baseAngle = aimDir > 0 ? spread : Math.PI + spread;
-      const speed =
-        (isBoss ? 115 : 85) +
-        Math.random() * (options.finisher || options.strong ? 135 : 95);
+      let vx = 0;
+      let vy = 0;
+      let vz = 0;
+
+      if (isBlocked) {
+        // Guard deflection bounces backward/outward off shield
+        const spread = (Math.random() - 0.5) * 1.9;
+        const angle = -baseDir > 0 ? spread : Math.PI + spread;
+        const speed = 70 + Math.random() * 75;
+        vx = Math.cos(angle) * speed;
+        vy = Math.sin(angle) * speed * 0.3;
+        vz = 40 + Math.random() * 65;
+      } else if (atk === 'uppercut') {
+        // Rising Shoryuken dragon trajectory (strongly upward + forward tilt)
+        const forward = baseDir * (28 + Math.random() * 68);
+        vx = forward;
+        vy = (Math.random() - 0.5) * 32;
+        vz = 145 + Math.random() * 115;
+      } else if (atk === 'jab') {
+        // Tight directional horizontal punch cone
+        const spread = (Math.random() - 0.5) * 0.95;
+        const angle = baseDir > 0 ? spread : Math.PI + spread;
+        const speed = 95 + Math.random() * 85;
+        vx = Math.cos(angle) * speed;
+        vy = Math.sin(angle) * speed * 0.24;
+        vz = 38 + Math.random() * 62;
+      } else {
+        // Heavy, kick, finisher, cane, special: strong forward blast + subtle back-ricochet
+        const ricochet = isBoss || isBarrier ? Math.random() < 0.28 : Math.random() < 0.16;
+        const aimDir = ricochet ? -baseDir : baseDir;
+        const coneWidth = atk === 'finisher' ? 1.5 : 1.15;
+        const spread = (Math.random() - 0.5) * coneWidth;
+        const angle = aimDir > 0 ? spread : Math.PI + spread;
+        const speed =
+          (isBoss ? 115 : 92) +
+          Math.random() * (options.finisher || options.strong ? 130 : 88);
+        vx = Math.cos(angle) * speed;
+        vy = Math.sin(angle) * speed * 0.28;
+        vz = (isBoss ? 72 : 54) + Math.random() * (options.strong || isBoss ? 120 : 82);
+      }
+
       const swatch = palette[i % palette.length];
       const maxLife =
-        (isBoss ? 0.34 : 0.26) + Math.random() * (options.finisher ? 0.2 : 0.14);
+        isBlocked
+          ? 0.18 + Math.random() * 0.1
+          : (isBoss ? 0.30 : 0.22) + Math.random() * (options.finisher ? 0.16 : 0.12);
 
       this.pushParticle({
-        x: x + (Math.random() - 0.5) * 4,
-        y: y + (Math.random() - 0.5) * 4,
-        z: Math.max(4, z + (Math.random() - 0.5) * 6),
-        vx: Math.cos(baseAngle) * speed,
-        vy: Math.sin(baseAngle) * speed * 0.28,
-        vz: (isBoss ? 70 : 50) + Math.random() * (options.strong || isBoss ? 125 : 85),
+        x: x + (Math.random() - 0.5) * 3,
+        y: y + (Math.random() - 0.5) * 3,
+        z: Math.max(4, z + (Math.random() - 0.5) * 5),
+        vx,
+        vy,
+        vz,
         color: swatch.primary,
         coolColor: swatch.cool,
-        size: isBoss || options.finisher ? (Math.random() > 0.35 ? 3 : 2.5) : 2.5,
+        size: isBoss || options.finisher || atk === 'heavy' ? (Math.random() > 0.35 ? 3 : 2.5) : 2.4,
         life: maxLife,
         maxLife,
         kind: 'spark',
-        bounce: isBoss ? 0.48 : 0.38,
-        drag: 2.1,
-        gravityScale: 0.85,
+        bounce: isBoss ? 0.46 : 0.36,
+        drag: atk === 'uppercut' ? 1.8 : 2.3,
+        gravityScale: atk === 'uppercut' ? 0.72 : 0.85,
         prevX: x,
         prevY: y,
         prevZ: z,
       });
     }
 
+    // Short, stylized kinetic trails on ground kicks
+    if (options.kickTrail && !isBlocked && !reduced) {
+      const trailCount = options.finisher ? 4 : 3;
+      for (let i = 0; i < trailCount; i++) {
+        const arcRatio = i / Math.max(1, trailCount - 1);
+        const startZ = Math.max(8, z - 6 + arcRatio * 14);
+        const maxLife = 0.14 + i * 0.02;
+        this.pushParticle({
+          x: x - baseDir * (6 - arcRatio * 6),
+          y: y + (arcRatio - 0.5) * 3,
+          z: startZ,
+          vx: baseDir * (145 + arcRatio * 55),
+          vy: (arcRatio - 0.5) * 18,
+          vz: 55 + arcRatio * 80,
+          color: options.finisher ? '#fde047' : '#fef08a',
+          coolColor: options.finisher ? '#f97316' : '#38bdf8',
+          size: options.finisher ? 3 : 2.5,
+          life: maxLife,
+          maxLife,
+          kind: 'kickTrail',
+          drag: 3.4,
+          gravityScale: 0.25,
+          prevX: x - baseDir * 12,
+          prevY: y,
+          prevZ: Math.max(6, startZ - 4),
+        });
+      }
+    }
+
     // Crisp metallic pixel shards (turnstile steel, badge/buckle chips, armor flecks)
-    const shardCount = isBoss
-      ? options.finisher
-        ? 6
-        : options.strong
-          ? 4
-          : 2
-      : isBarrier
-        ? 2
-        : options.finisher || options.strong
+    const rawShardCount = isBlocked
+      ? 0
+      : isBoss
+        ? options.finisher
+          ? 5
+          : options.strong
+            ? 3
+            : 2
+        : isBarrier
           ? 2
-          : 0;
+          : options.finisher || options.strong
+            ? 2
+            : 0;
+    const shardCount = reduced ? Math.min(1, rawShardCount) : rawShardCount;
 
     for (let i = 0; i < shardCount; i++) {
-      const aimDir = Math.random() < 0.3 ? -baseDir : baseDir;
-      const spread = (Math.random() - 0.5) * 1.4;
+      const aimDir = Math.random() < 0.25 ? -baseDir : baseDir;
+      const spread = (Math.random() - 0.5) * 1.3;
       const angle = aimDir > 0 ? spread : Math.PI + spread;
-      const speed = 75 + Math.random() * 115;
+      const speed = 78 + Math.random() * 110;
       const swatch = palette[(i + 1) % palette.length];
-      const maxLife = 0.42 + Math.random() * 0.22;
+      const maxLife = 0.36 + Math.random() * 0.2;
 
       this.pushParticle({
         x,
@@ -1678,7 +1860,7 @@ export class BusBeatEmUpEngine {
         z: Math.max(4, z),
         vx: Math.cos(angle) * speed,
         vy: Math.sin(angle) * speed * 0.3,
-        vz: 85 + Math.random() * 100,
+        vz: 85 + Math.random() * 95,
         color: isBoss && i % 2 === 0 ? '#e2e8f0' : swatch.primary,
         coolColor: '#475569',
         size: isBoss ? 3 : 2.5,
@@ -1724,6 +1906,28 @@ export class BusBeatEmUpEngine {
   }
 
   private setPlayerAnim(anim: PlayerAnimState, duration = 0) {
+    const isComboMove =
+      anim === 'punch1' ||
+      anim === 'punch2' ||
+      anim === 'heavyPunch' ||
+      anim === 'kick' ||
+      anim === 'kickFinisher';
+    if (isComboMove) {
+      const hasActiveChain =
+        this.player.comboResetTimer > 0 ||
+        this.player.anim === 'punch1' ||
+        this.player.anim === 'punch2' ||
+        this.player.anim === 'kick';
+      this.activeAttackPrevAnim = hasActiveChain ? this.lastComboAttackAnim : this.player.anim;
+      this.lastComboAttackAnim = anim;
+    } else if (anim !== 'idle' || this.player.comboResetTimer <= 0) {
+      this.activeAttackPrevAnim = this.player.anim;
+      if (anim !== 'idle') {
+        this.lastComboAttackAnim = 'idle';
+      }
+    }
+    this.caneSpinVisual = anim === 'cane' && this.player.caneCharges === 1;
+    this.attackActiveTicks = 0;
     this.player.anim = anim;
     this.player.animTimer = duration;
     this.player.animDuration = duration > 0 ? duration : undefined;
@@ -1890,6 +2094,18 @@ export class BusBeatEmUpEngine {
         this.impactFlashes.splice(i, 1);
       }
     }
+    for (let i = this.groundShockwaves.length - 1; i >= 0; i--) {
+      this.groundShockwaves[i].life -= dt;
+      if (this.groundShockwaves[i].life <= 0) {
+        this.groundShockwaves.splice(i, 1);
+      }
+    }
+    if (this.perfectHitTimer > 0) {
+      this.perfectHitTimer = Math.max(0, this.perfectHitTimer - dt);
+      if (this.perfectHitTimer === 0) {
+        this.pushHudSnapshot();
+      }
+    }
     if (this.bossKoOverlay) {
       this.bossKoOverlay.life -= dt;
       if (this.bossKoOverlay.life <= 0) {
@@ -1903,19 +2119,38 @@ export class BusBeatEmUpEngine {
       }
     }
 
+    if (this.hitstopFrames > 0) {
+      this.hitstopFrames--;
+      return;
+    }
+
     if (this.hitstopTimer > 0) {
       this.hitstopTimer = Math.max(0, this.hitstopTimer - dt);
       return;
     }
 
     let worldDt = dt;
+    let timeScale = 1;
     if (this.bossBulletTimeTimer > 0) {
       const decayRate = this.player.anim === 'jumpKick' || this.player.z > 4 ? 1 : 2.2;
       this.bossBulletTimeTimer = Math.max(0, this.bossBulletTimeTimer - dt * decayRate);
       const easeOut = this.bossBulletTimeTimer < 0.14 ? 1 - this.bossBulletTimeTimer / 0.14 : 0;
-      const slowScale = 0.28 + easeOut * 0.72;
-      worldDt = dt * slowScale;
+      timeScale = Math.min(timeScale, 0.28 + easeOut * 0.72);
     }
+    if (this.comboFinisherSlowTimer > 0) {
+      const finisherSlowMax = Math.max(0.01, this.comboFinisherSlowMax);
+      this.comboFinisherSlowTimer = Math.max(0, this.comboFinisherSlowTimer - dt);
+      const easeOut = 1 - Math.min(1, this.comboFinisherSlowTimer / finisherSlowMax);
+      timeScale = Math.min(
+        timeScale,
+        this.comboFinisherSlowMinScale + easeOut * (1 - this.comboFinisherSlowMinScale)
+      );
+      if (this.comboFinisherSlowTimer === 0) {
+        this.comboFinisherSlowMax = 0.085;
+        this.comboFinisherSlowMinScale = 0.52;
+      }
+    }
+    worldDt = dt * timeScale;
 
     if (this.bossFinisherState) {
       this.updateBossFinisher(worldDt);
@@ -2197,6 +2432,9 @@ export class BusBeatEmUpEngine {
 
     if (!isAttacking && p.comboResetTimer > 0) {
       p.comboResetTimer = Math.max(0, p.comboResetTimer - dt);
+      if (p.comboResetTimer === 0) {
+        this.lastComboAttackAnim = 'idle';
+      }
     }
 
     if (this.bufferTimer > 0) {
@@ -2304,8 +2542,11 @@ export class BusBeatEmUpEngine {
           (p.anim !== 'jumpKick' || p.animTimer <= 0.28) &&
           (p.anim !== 'cane' || p.animTimer <= 0.21) &&
           (p.anim !== 'special' || p.animTimer <= 0.22);
+        if (canHitNow) {
+          this.attackActiveTicks++;
+        }
         if (!p.attackHasHit && canHitNow) {
-          this.resolvePlayerAttack();
+          this.resolvePlayerAttack(this.attackActiveTicks === 1);
         }
         if (p.animTimer <= 0) {
           const prevAnim = p.anim;
@@ -2465,7 +2706,7 @@ export class BusBeatEmUpEngine {
     }
   }
 
-  private resolvePlayerAttack() {
+  private resolvePlayerAttack(isExactStartFrame = false) {
     const p = this.player;
     const isRailSpin = p.anim === 'railSpin';
     const isBagSpin = p.anim === 'bagSpin';
@@ -2478,6 +2719,7 @@ export class BusBeatEmUpEngine {
     const isUppercutFinisher = p.anim === 'punch3';
     const isJumpPunch = p.anim === 'jumpPunch';
     const isKick = p.anim === 'kick' || p.anim === 'jumpKick' || isKickFinisher;
+    const isGroundKick = p.anim === 'kick' || isKickFinisher;
     const isFinisher = isUppercutFinisher || isKickFinisher;
 
     if (p.anim === 'spray' || p.anim === 'railSlam') {
@@ -2517,7 +2759,7 @@ export class BusBeatEmUpEngine {
             : isHeavyPunch
               ? 24
               : 20;
-    // Cane damage reduced by 12% (22 -> 19); Headphone Whip does low ranged rock damage (9)
+    // Cane damage reduced by 20% (19 -> 15); Headphone Whip does low ranged rock damage (9)
     const baseDamage = isSoundSpecial
       ? 28
       : isSpecial
@@ -2527,7 +2769,7 @@ export class BusBeatEmUpEngine {
           : isUppercutFinisher
             ? 19
             : isCane
-              ? 19
+              ? 15
               : isRailSpin
                 ? 20
                 : isBagSpin
@@ -2569,6 +2811,21 @@ export class BusBeatEmUpEngine {
 
       if (e.type === 'industria' && e.stinkActive && !isSpecial && !isSoundSpecial) {
         audio.playBlock();
+        const blockDir: 1 | -1 = dx >= 0 ? 1 : -1;
+        this.impactFlashes.push({
+          x: e.x - blockDir * 8,
+          y: e.y - e.z - 22,
+          life: 0.12,
+          maxLife: 0.12,
+          strong: false,
+          kind: 'blocked',
+          dir: blockDir,
+        });
+        this.spawnHitSparks(e.x - blockDir * 8, e.y, e.z + 20, blockDir, {
+          target: 'barrier',
+          blocked: true,
+          attackType: 'blocked',
+        });
         e.hp = Math.max(1, e.hp - 1);
         hitCount++;
         cleanHitCount++;
@@ -2595,9 +2852,21 @@ export class BusBeatEmUpEngine {
       if (playerInFrontOfStudent && !breaksBarrier) {
         audio.playBlock();
         this.shieldBreakHintTimer = 4.5;
-        this.spawnHitSparks(e.x + e.facing * 10, e.y, 18, -p.facing, {
+        const shieldX = e.x + e.facing * 10;
+        const blockDir: 1 | -1 = p.facing;
+        this.impactFlashes.push({
+          x: shieldX,
+          y: e.y - e.z - 20,
+          life: 0.13,
+          maxLife: 0.13,
+          strong: false,
+          kind: 'blocked',
+          dir: blockDir,
+        });
+        this.spawnHitSparks(shieldX, e.y, e.z + 18, -p.facing, {
           target: 'barrier',
           blocked: true,
+          attackType: 'blocked',
         });
         if (e.guardMax > 0 && e.guardHp > 0) {
           e.guardHp = Math.max(0, e.guardHp - 1);
@@ -2707,6 +2976,9 @@ export class BusBeatEmUpEngine {
       if (isKickFinisher || isUppercutFinisher || isSoundSpecial) {
         e.vz = isUppercutFinisher ? 135 : 120;
         e.z = Math.max(e.z, 2);
+      } else if (isJumpPunch) {
+        e.vz = Math.max(e.vz, 95);
+        e.z = Math.max(e.z, 2);
       } else if (isHeavyPunch) {
         e.vz = 58;
         e.z = Math.max(e.z, 1);
@@ -2732,32 +3004,87 @@ export class BusBeatEmUpEngine {
       if (isStrongHit || isHeadphoneWhip) {
         landedStrongHit = true;
       }
-      if (isStrongHit) {
-        this.hitstopTimer =
-          isHeavyPunch || isFinisher || isSoundSpecial || guardBrokenNow ? 0.058 : 0.052;
-        this.triggerShake(
-          isHeavyPunch || isFinisher || isSoundSpecial || guardBrokenNow ? 0.18 : 0.12,
-          isHeavyPunch || isFinisher || isSoundSpecial || guardBrokenNow ? 3.8 : 2.5
-        );
-      } else {
-        this.hitstopTimer = 0.036;
-      }
 
-      // Clean 16-bit yellow/white impact starburst at exact contact point + crisp sparks
-      const collisionX = isHeavyPunch ? p.x + p.facing * 26 : e.x - kbDir * 6;
+      // Differentiated 16-bit impact flash & directional sparks at precise visual contact point
+      const hitDir: 1 | -1 = kbDir >= 0 ? 1 : -1;
+      const limbReach = isHeavyPunch
+        ? 33
+        : isKickFinisher
+          ? 30
+          : p.anim === 'punch2'
+            ? 29
+            : p.anim === 'jumpKick'
+              ? 28
+              : p.anim === 'kick'
+                ? 26
+                : isCane
+                  ? 32
+                  : isJumpPunch
+                    ? 14
+                    : 24;
+      const limbTipX = p.x + p.facing * limbReach;
+      const enemyEdgeX = e.x - hitDir * (e.isBoss ? 10 : 6);
+      const isOmnidirectional = isSpecial || isSoundSpecial || isRailSpin || isBagSpin || isHeadphoneWhip;
+      const collisionX = isOmnidirectional
+        ? enemyEdgeX
+        : p.facing > 0
+          ? Math.max(p.x + 10, Math.min(e.x + 4, (limbTipX + enemyEdgeX) * 0.5))
+          : Math.min(p.x - 10, Math.max(e.x - 4, (limbTipX + enemyEdgeX) * 0.5));
+      const contactZ = isJumpPunch
+        ? Math.max(e.z + 28, p.z + 34)
+        : isKickFinisher
+          ? Math.max(e.z + 23, p.z + 25)
+          : p.anim === 'jumpKick'
+            ? Math.max(e.z + 24, p.z + 26)
+            : p.anim === 'kick'
+              ? Math.max(e.z + 16, p.z + 18)
+              : e.z + (p.anim === 'punch2' || isHeavyPunch ? 24 : 22);
+
+      const impactKind: ImpactFlashKind =
+        isJumpPunch || isUppercutFinisher
+          ? 'uppercut'
+          : isKickFinisher || isSoundSpecial || isSpecial || isRailSpin || isBagSpin || guardBrokenNow
+            ? 'finisher'
+            : isHeavyPunch
+              ? 'heavy'
+              : isKick
+                ? 'kick'
+                : 'jab';
+      const flashLife =
+        impactKind === 'finisher'
+          ? 0.18
+          : impactKind === 'heavy' || impactKind === 'uppercut'
+            ? 0.16
+            : impactKind === 'kick'
+              ? 0.14
+              : 0.11;
+
       this.impactFlashes.push({
         x: collisionX,
-        y: e.y - e.z - 26,
-        life: 0.14,
-        maxLife: 0.14,
+        y: e.y - contactZ,
+        life: flashLife,
+        maxLife: flashLife,
         strong: isStrongHit || isHeadphoneWhip || e.isBoss,
+        kind: impactKind,
+        dir: hitDir,
       });
-      this.spawnHitSparks(collisionX, e.y, e.z + 23, kbDir, {
+      this.spawnHitSparks(collisionX, e.y, contactZ, hitDir, {
         target: e.isBoss ? 'turnstile_boss' : 'passenger',
         bossType: e.type,
         strong: isStrongHit || isHeadphoneWhip,
-        finisher: isFinisher || isSoundSpecial,
+        finisher: isFinisher || isSoundSpecial || guardBrokenNow || isHeavyPunch,
+        attackType: impactKind,
+        kickTrail: isGroundKick,
       });
+      if (isKickFinisher || isHeavyPunch || isUppercutFinisher || isSpecial || guardBrokenNow) {
+        this.spawnGroundShockwave(
+          e.x,
+          e.y,
+          isKickFinisher ? 30 : isSpecial || guardBrokenNow ? 32 : 25,
+          guardBrokenNow ? '#38bdf8' : isKickFinisher ? '#f97316' : '#facc15',
+          Boolean(isKickFinisher || isSpecial || guardBrokenNow)
+        );
+      }
       this.addFloatingText(`-${effectiveDamage}`, e.x, e.y, e.z + 32, guardBrokenNow ? '#38bdf8' : '#f8fafc');
       p.score += effectiveDamage * 2;
 
@@ -2776,7 +3103,50 @@ export class BusBeatEmUpEngine {
 
     if (hitCount > 0) {
       if (cleanHitCount > 0) {
+        const isComboFinisher =
+          isHeavyPunch ||
+          isKickFinisher ||
+          isUppercutFinisher ||
+          (isCane && this.caneSpinVisual);
+        const extraTargets = Math.min(3, Math.max(0, cleanHitCount - 1));
+        const reduced = this.isReducedMotionPreferred();
+
+        if (isComboFinisher) {
+          // 3-frame base freeze scaling up to 6 frames as multiple targets are struck simultaneously
+          const finisherFrames = reduced
+            ? Math.min(2, 1 + Math.floor(extraTargets / 2))
+            : 3 + extraTargets;
+          this.hitstopFrames = Math.max(this.hitstopFrames, finisherFrames);
+          if (!reduced) {
+            const slowDuration = 0.085 + extraTargets * 0.03;
+            const slowMinScale = Math.max(0.32, 0.52 - extraTargets * 0.06);
+            this.comboFinisherSlowMax = Math.max(this.comboFinisherSlowMax, slowDuration);
+            this.comboFinisherSlowTimer = Math.max(this.comboFinisherSlowTimer, slowDuration);
+            this.comboFinisherSlowMinScale = Math.min(this.comboFinisherSlowMinScale, slowMinScale);
+          }
+          this.triggerShake(0.18 + extraTargets * 0.035, 3.8 + extraTargets * 0.95);
+        } else if (landedStrongHit || landedGuardBreak) {
+          const baseTimer =
+            isSoundSpecial || landedGuardBreak
+              ? 0.058
+              : isSpecial || isRailSpin || isBagSpin
+                ? 0.045
+                : 0.024;
+          this.hitstopTimer = Math.max(this.hitstopTimer, baseTimer + extraTargets * 0.01);
+          this.triggerShake(
+            (isSoundSpecial || landedGuardBreak ? 0.18 : 0.12) + extraTargets * 0.025,
+            (isSoundSpecial || landedGuardBreak ? 3.8 : 2.5) + extraTargets * 0.7
+          );
+        } else {
+          // Common hits stay brisk & responsive, with only a tiny nudge on multi-target cleaves
+          this.hitstopTimer = Math.max(this.hitstopTimer, 0.016 + extraTargets * 0.006);
+        }
+
         this.registerHitChain(cleanHitCount);
+        if (isExactStartFrame) {
+          this.perfectHitTimer = 0.85;
+          this.perfectHitSeq++;
+        }
         vibrateHit(landedStrongHit);
         if (landedMetallicHit) {
           audio.playMetallicImpact(landedGuardBreak || landedStrongHit);
@@ -2827,6 +3197,7 @@ export class BusBeatEmUpEngine {
       if (usedCane && p.caneCharges > 0) {
         p.caneCharges--;
       }
+      this.pushHudSnapshot();
     }
   }
 
@@ -2911,16 +3282,16 @@ export class BusBeatEmUpEngine {
       const r = Math.random();
       if (e.type === 'idosa' && r < 0.25) {
         drop = 'bengala';
-      } else if (e.type === 'vendedor' && r < 0.28) {
+      } else if (e.type === 'vendedor' && r < 0.16) {
         drop = r < 0.06 ? 'bilhete_dourado' : 'chocolate';
       } else if (e.type === 'estudante' && r < 0.35) {
         drop = 'creditos';
       } else if (e.type === 'patricinha' && r < 0.25) {
         drop = r < 0.14 ? 'desodorante' : 'maquiagem';
-      } else if (e.type === 'tio_audio' && r < 0.22) {
-        drop = r < 0.13 ? 'cafezinho' : 'creditos';
-      } else if (e.type === 'skatista' && r < 0.22) {
-        drop = r < 0.14 ? 'cafezinho' : 'maquiagem';
+      } else if (e.type === 'tio_audio' && r < 0.18) {
+        drop = r < 0.07 ? 'cafezinho' : 'creditos';
+      } else if (e.type === 'skatista' && r < 0.18) {
+        drop = r < 0.07 ? 'cafezinho' : 'maquiagem';
       }
     }
 
@@ -3494,9 +3865,19 @@ export class BusBeatEmUpEngine {
       p.shieldHits--;
       audio.playBlock();
       vibrateDamage(true);
+      this.impactFlashes.push({
+        x: p.x + p.facing * 8,
+        y: p.y - p.z - 18,
+        life: 0.13,
+        maxLife: 0.13,
+        strong: false,
+        kind: 'blocked',
+        dir: p.facing,
+      });
       this.spawnHitSparks(p.x + p.facing * 6, p.y, p.z + 18, p.facing, {
         target: 'barrier',
         blocked: true,
+        attackType: 'blocked',
       });
       if (p.shieldHits <= 0) {
         p.makeupShieldTimer = 0;
@@ -3717,11 +4098,12 @@ export class BusBeatEmUpEngine {
       if (this.enemies.length < 7) {
         const spawnX = Math.min(bounds.maxX - 24, Math.max(bounds.minX + 100, this.camX + INTERNAL_WIDTH - 48));
         const extraType: EnemyType = Math.random() < 0.5 ? 'tio_audio' : 'patricinha';
-        const en = this.spawnEnemy(extraType, spawnX, 176, false, 'cafezinho');
+        const extraDrop: ItemType | undefined = Math.random() < 0.4 ? 'cafezinho' : undefined;
+        const en = this.spawnEnemy(extraType, spawnX, 176, false, extraDrop);
         en.speechText = 'LICENÇA QUE TÁ LOTADO!';
         en.speechTimer = 2.0;
         this.spawnParticles(spawnX, 176, 18, '#facc15', 10);
-      } else {
+      } else if (Math.random() < 0.45) {
         this.spawnDrop('cafezinho', Math.min(bounds.maxX - 30, p.x + 70), 186);
       }
     } else if (kind === 'short_circuit') {
@@ -4235,10 +4617,20 @@ export class BusBeatEmUpEngine {
             } else {
               audio.playPunchSnap();
             }
+            this.impactFlashes.push({
+              x: e.x - kbDir * 6,
+              y: e.y - e.z - 20,
+              life: 0.14,
+              maxLife: 0.14,
+              strong: true,
+              kind: 'finisher',
+              dir: kbDir as 1 | -1,
+            });
             this.spawnHitSparks(e.x, e.y, e.z + 20, kbDir, {
               target: e.isBoss ? 'turnstile_boss' : 'passenger',
               bossType: e.type,
               strong: true,
+              attackType: 'finisher',
             });
             this.addFloatingText(`-${pr.damage}`, e.x, e.y, e.z + 34, '#38bdf8');
             if (e.hp <= 0) {
@@ -4333,7 +4725,7 @@ export class BusBeatEmUpEngine {
         audio.playPickup();
         break;
       case 'chocolate':
-        p.hp = Math.min(p.maxHp, p.hp + 15);
+        p.hp = Math.min(p.maxHp, p.hp + 10);
         audio.playHeal();
         break;
       case 'creditos':
@@ -4351,7 +4743,7 @@ export class BusBeatEmUpEngine {
         audio.playMakeup();
         break;
       case 'cafezinho':
-        p.hp = Math.min(p.maxHp, p.hp + 10);
+        p.hp = Math.min(p.maxHp, p.hp + 6);
         this.addSpecialEnergy(40);
         p.speedBoostTimer = Math.max(p.speedBoostTimer, 5);
         audio.playHeal();
@@ -4507,6 +4899,8 @@ export class BusBeatEmUpEngine {
       enemiesDefeated: this.player.enemiesDefeated,
       comboStreak: this.player.comboStreak,
       comboMultiplier: this.player.comboMultiplier,
+      perfectHitActive: this.perfectHitTimer > 0,
+      perfectHitSeq: this.perfectHitSeq,
       credits: this.player.credits,
       ticketCost: this.getEffectiveTicketCost(),
       ticketValidated: this.ticketValidated,
@@ -4655,6 +5049,24 @@ export class BusBeatEmUpEngine {
       ctx.fill();
     }
 
+    // 2b. Localized ground shockwaves on ground finishers (drawn cleanly on the floor plane)
+    if (this.groundShockwaves.length > 0) {
+      const reduced = this.isReducedMotionPreferred();
+      for (const sw of this.groundShockwaves) {
+        const progress = 1 - Math.max(0, Math.min(1, sw.life / sw.maxLife));
+        drawGroundShockwave(
+          ctx,
+          sw.x - this.camX,
+          sw.y,
+          progress,
+          sw.color,
+          sw.strong,
+          sw.radius,
+          reduced
+        );
+      }
+    }
+
     // 3. Y-sorted entities
     type Drawable = { y: number; draw: () => void };
     const drawables: Drawable[] = [];
@@ -4787,7 +5199,14 @@ export class BusBeatEmUpEngine {
           this.simTime,
           this.shopLoadout.equippedSkin,
           this.shopLoadout.garage,
-          this.player.animDuration
+          this.player.animDuration,
+          {
+            prevAnim:
+              this.player.anim === 'idle' ? this.lastComboAttackAnim : this.activeAttackPrevAnim,
+            chainActive: this.player.comboResetTimer > 0,
+            comboStep: this.player.comboStep,
+            caneSpin: this.caneSpinVisual,
+          }
         );
         this.drawPlayerSpecialElectricParticles(ctx, true);
       },
@@ -4872,7 +5291,10 @@ export class BusBeatEmUpEngine {
 
     for (const fl of this.impactFlashes) {
       const progress = 1 - Math.max(0, Math.min(1, fl.life / fl.maxLife));
-      drawImpactFlash(ctx, fl.x - this.camX, fl.y, progress, fl.strong);
+      drawImpactFlash(ctx, fl.x - this.camX, fl.y, progress, fl.strong, {
+        kind: fl.kind,
+        dir: fl.dir,
+      });
     }
 
     // 5b. Boss Finisher KO Shockwaves & Debris
