@@ -164,6 +164,13 @@ export interface PlayerEntity {
   headphoneWhipUsed?: boolean;
 }
 
+export type EnemyTacticalRole =
+  | 'attacker'
+  | 'prep'
+  | 'flank'
+  | 'recover'
+  | 'reposition';
+
 export interface EnemyEntity {
   id: number;
   type: EnemyType;
@@ -201,6 +208,21 @@ export interface EnemyEntity {
   finisherKind?: BossFinisherKind;
   finisherProg?: number;
   finisherPhaseAngle?: number;
+  flankSide?: 1 | -1;
+  slotAngleOffset?: number;
+  aiSpeedVar?: number;
+  repositionTimer?: number;
+  repositionBias?: number;
+  activeAttackKind?: 'melee' | 'ranged';
+  renderAlpha?: number;
+  speechPriority?: 'combat' | 'idle';
+  tacticalRole?: EnemyTacticalRole;
+  roleTimer?: number;
+  flankSwitchLockTimer?: number;
+  hesitateTimer?: number;
+  subModeFlag?: boolean;
+  recoverDirX?: number;
+  recoverDirY?: number;
 }
 
 export interface DropItem {

@@ -404,6 +404,7 @@ export function GameHUD({
 
   const formattedTimeLeft = `${String(Math.floor(Math.ceil(hud.infiniteTimeLeft) / 60)).padStart(2, '0')}:${String(Math.ceil(hud.infiniteTimeLeft) % 60).padStart(2, '0')}`;
   const displayHits = hud.hitsLanded > 0 ? hud.hitsLanded : 0;
+  const isGoldHits = displayHits >= 30;
 
   const hasActionPrompt =
     hud.nearValidator ||
@@ -943,16 +944,40 @@ export function GameHUD({
                   key={displayHits}
                   className="animate-combo-pop flex flex-col items-end -skew-x-6"
                 >
-                  <div className="flex items-baseline gap-1 px-2 py-0.5 rounded bg-gradient-to-r from-[#06b6d4]/90 to-[#0284c7]/85 border border-[#67e8f9] shadow-[0_2px_0_#090d16]">
-                    <span className="font-arcade-display text-lg sm:text-2xl leading-none text-[#facc15] drop-shadow-[0_2px_0_#090d16] tabular-nums">
+                  <div
+                    className={`flex items-baseline gap-1 px-2 py-0.5 rounded border shadow-[0_2px_0_#090d16] transition-colors duration-200 ${
+                      isGoldHits
+                        ? 'bg-gradient-to-r from-[#78350f]/95 via-[#92400e]/95 to-[#78350f]/95 border-[#fde047] hit-counter-gold-badge'
+                        : 'bg-gradient-to-r from-[#06b6d4]/90 to-[#0284c7]/85 border-[#67e8f9]'
+                    }`}
+                  >
+                    <span
+                      className={`font-arcade-display text-lg sm:text-2xl leading-none drop-shadow-[0_2px_0_#090d16] tabular-nums ${
+                        isGoldHits ? 'text-[#fef08a] hit-counter-gold-text' : 'text-[#facc15]'
+                      }`}
+                    >
                       {displayHits}
                     </span>
-                    <span className="font-arcade-display text-xs sm:text-sm text-white drop-shadow-[0_1.5px_0_#090d16]">
+                    <span
+                      className={`font-arcade-display text-xs sm:text-sm drop-shadow-[0_1.5px_0_#090d16] ${
+                        isGoldHits ? 'text-[#fde047]' : 'text-white'
+                      }`}
+                    >
                       HITS
                     </span>
                   </div>
-                  <div className="-mt-1 mr-1 px-2 py-0.5 rounded bg-gradient-to-r from-[#ec4899] to-[#db2777] border border-[#090d16] shadow-[0_2px_0_#090d16]">
-                    <span className="font-arcade-display italic text-[10px] sm:text-xs text-white leading-none">
+                  <div
+                    className={`-mt-1 mr-1 px-2 py-0.5 rounded border border-[#090d16] shadow-[0_2px_0_#090d16] transition-colors duration-200 ${
+                      isGoldHits
+                        ? 'bg-gradient-to-r from-[#f59e0b] to-[#b45309]'
+                        : 'bg-gradient-to-r from-[#ec4899] to-[#db2777]'
+                    }`}
+                  >
+                    <span
+                      className={`font-arcade-display italic text-[10px] sm:text-xs leading-none drop-shadow-[0_1px_0_#090d16] ${
+                        isGoldHits ? 'text-[#fefce8]' : 'text-white'
+                      }`}
+                    >
                       {hud.comboMultiplier >= 10 ? `COMBO ×${hud.comboMultiplier}!` : 'COMBO!'}
                     </span>
                   </div>
@@ -1113,20 +1138,36 @@ export function GameHUD({
               key={displayHits}
               className="animate-combo-pop pointer-events-none select-none relative flex flex-col items-start pl-1 pb-0.5"
             >
-              {/* Red Comic Jagged Splash Backing */}
+              {/* Comic Jagged Splash Backing (turns gleaming gold at 30+ hits) */}
               <div
                 aria-hidden="true"
-                className="absolute -inset-x-2 -inset-y-1 bg-[#dc2626] border-2 border-[#090d16] -skew-x-12 -rotate-3 rounded-sm shadow-[0_4px_0_#090d16]"
+                className={`absolute -inset-x-2 -inset-y-1 border-2 -skew-x-12 -rotate-3 rounded-sm transition-colors duration-200 ${
+                  isGoldHits
+                    ? 'bg-gradient-to-br from-[#92400e] via-[#b45309] to-[#78350f] border-[#fde047] hit-counter-gold-badge'
+                    : 'bg-[#dc2626] border-[#090d16] shadow-[0_4px_0_#090d16]'
+                }`}
               />
               <div className="relative flex items-baseline gap-1.5 -skew-x-6 -rotate-2 px-1">
-                <span className="font-arcade-display text-3xl xl:text-[34px] leading-none text-[#facc15] arcade-text-outline tabular-nums">
+                <span
+                  className={`font-arcade-display text-3xl xl:text-[34px] leading-none arcade-text-outline tabular-nums ${
+                    isGoldHits ? 'text-[#fef08a] hit-counter-gold-text' : 'text-[#facc15]'
+                  }`}
+                >
                   {displayHits}
                 </span>
-                <span className="font-arcade-display text-lg xl:text-xl leading-none text-[#facc15] arcade-text-outline">
+                <span
+                  className={`font-arcade-display text-lg xl:text-xl leading-none arcade-text-outline ${
+                    isGoldHits ? 'text-[#fde047] hit-counter-gold-text' : 'text-[#facc15]'
+                  }`}
+                >
                   HITS
                 </span>
               </div>
-              <span className="relative font-arcade-display italic text-xs xl:text-sm leading-none text-white arcade-text-outline pl-3 -mt-0.5 -skew-x-6 -rotate-2">
+              <span
+                className={`relative font-arcade-display italic text-xs xl:text-sm leading-none arcade-text-outline pl-3 -mt-0.5 -skew-x-6 -rotate-2 ${
+                  isGoldHits ? 'text-[#fef3c7]' : 'text-white'
+                }`}
+              >
                 {hud.comboMultiplier >= 10 ? `COMBO ×${hud.comboMultiplier}!` : 'COMBO!'}
               </span>
             </div>

@@ -536,7 +536,12 @@ export function drawImpactFlash(
   const kind: ImpactFlashKind = options?.kind ?? (strong ? 'heavy' : 'jab');
   const dir: 1 | -1 = options?.dir ?? 1;
   const p = Math.max(0, Math.min(1, progress));
-  const fade = p < 0.65 ? 1 : Math.max(0.08, 1 - (p - 0.65) / 0.35);
+  const isPotent = kind === 'finisher' || kind === 'heavy';
+  const fade = isPotent
+    ? Math.max(0.05, Math.pow(1 - p, 1.32))
+    : p < 0.65
+      ? 1
+      : Math.max(0.08, 1 - (p - 0.65) / 0.35);
 
   if (kind === 'blocked') {
     const shrink = p < 0.25 ? 0.72 + (p / 0.25) * 0.38 : Math.max(0.2, 1.1 - p * 0.92);
@@ -578,16 +583,21 @@ export function drawImpactFlash(
 
   const baseScale =
     kind === 'finisher'
-      ? 1.48
+      ? 1.54
       : kind === 'heavy'
-        ? 1.32
+        ? 1.42
         : kind === 'uppercut'
           ? 1.24
           : kind === 'kick'
             ? 1.16
             : 0.96;
-  const shrink =
-    p < 0.24 ? 0.74 + (p / 0.24) * 0.42 : Math.max(0.18, 1.16 - p * 0.98);
+  const shrink = isPotent
+    ? p < 0.16
+      ? 0.88 + (p / 0.16) * 0.34
+      : Math.max(0.14, 1.22 - (p - 0.16) * 1.28)
+    : p < 0.24
+      ? 0.74 + (p / 0.24) * 0.42
+      : Math.max(0.18, 1.16 - p * 0.98);
 
   ctx.save();
   ctx.translate(cx, cy);
@@ -598,21 +608,40 @@ export function drawImpactFlash(
   }
   ctx.globalAlpha = fade;
 
-  // Finisher outer crisp shock ring
-  if (kind === 'finisher') {
-    ctx.strokeStyle = 'rgba(250, 204, 21, 0.85)';
-    ctx.lineWidth = Math.max(1, 2.2 * (1 - p * 0.7));
+  // Luminous radial core halo on heavy & finisher impacts (rapidly dissipates)
+  if (isPotent && p < 0.52) {
+    const coreGlowAlpha = (1 - p / 0.52) * (kind === 'finisher' ? 0.56 : 0.48);
+    ctx.save();
+    ctx.globalAlpha = coreGlowAlpha;
+    ctx.fillStyle = kind === 'finisher' ? '#fde047' : '#fef08a';
     ctx.beginPath();
-    ctx.arc(0, 0, 12 + p * 12, 0, Math.PI * 2);
+    ctx.ellipse(2, 0, 15 + p * 6, 11 + p * 4, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // Potent shock ring & directional energy transfer cone
+  if (kind === 'finisher') {
+    ctx.strokeStyle = 'rgba(250, 204, 21, 0.9)';
+    ctx.lineWidth = Math.max(1, 2.4 * (1 - p * 0.78));
+    ctx.beginPath();
+    ctx.arc(0, 0, 11 + p * 14, 0, Math.PI * 2);
+    ctx.stroke();
+  } else if (kind === 'heavy') {
+    // Forward kinetic punch cone illustrating force transfer into target
+    ctx.strokeStyle = 'rgba(254, 240, 138, 0.88)';
+    ctx.lineWidth = Math.max(1, 2.2 * (1 - p * 0.8));
+    ctx.beginPath();
+    ctx.arc(2, 0, 12 + p * 10, -0.95, 0.95);
     ctx.stroke();
   }
 
-  // Kick slash arc highlight along contact vector
+  // Slash arc highlight along contact vector
   if (kind === 'kick' || kind === 'finisher') {
     ctx.strokeStyle = kind === 'finisher' ? '#fb923c' : '#7dd3fc';
-    ctx.lineWidth = kind === 'finisher' ? 2.2 : 1.8;
+    ctx.lineWidth = kind === 'finisher' ? 2.4 : 1.8;
     ctx.beginPath();
-    ctx.arc(-4, 1, 16, -0.82, 0.72);
+    ctx.arc(-4, 1, 16, -0.85, 0.75);
     ctx.stroke();
   }
 
@@ -622,18 +651,31 @@ export function drawImpactFlash(
       ? [-2.15, -1.7, -1.25, -0.85, 0.4, 2.55]
       : kind === 'kick'
         ? [-0.9, -0.35, 0.15, 0.65, -2.55, 2.4]
-        : [-2.45, -1.65, -0.65, 0.18, 0.95, 2.2];
+        : kind === 'heavy'
+          ? [-0.55, -0.22, 0.0, 0.24, 0.58, -2.6, 2.6]
+          : [-2.45, -1.65, -0.65, 0.18, 0.95, 2.2];
   ctx.strokeStyle =
     kind === 'uppercut'
       ? '#38bdf8'
       : kind === 'finisher'
         ? '#ef4444'
         : '#f97316';
-  ctx.lineWidth = kind === 'jab' ? 1.2 : 1.5;
+  ctx.lineWidth = kind === 'jab' ? 1.2 : isPotent ? 1.8 : 1.5;
   for (let i = 0; i < streakAngles.length; i++) {
     const a = streakAngles[i];
-    const r0 = kind === 'jab' ? 7.5 : 9;
-    const r1 = i % 2 === 0 ? (kind === 'jab' ? 16.5 : 22) : kind === 'jab' ? 13 : 17.5;
+    const r0 = kind === 'jab' ? 7.5 : isPotent ? 8.5 : 9;
+    const r1 =
+      i % 2 === 0
+        ? kind === 'jab'
+          ? 16.5
+          : isPotent
+            ? 25
+            : 22
+        : kind === 'jab'
+          ? 13
+          : isPotent
+            ? 19.5
+            : 17.5;
     ctx.beginPath();
     ctx.moveTo(Math.cos(a) * r0, Math.sin(a) * r0);
     ctx.lineTo(Math.cos(a) * r1, Math.sin(a) * r1);
@@ -644,8 +686,13 @@ export function drawImpactFlash(
   const rays = kind === 'finisher' ? 16 : kind === 'jab' ? 10 : 14;
   ctx.beginPath();
   for (let i = 0; i < rays; i++) {
-    const a = (i * Math.PI * 2) / rays + (kind === 'heavy' ? 0.16 : 0.06);
-    const forwardBias = Math.cos(a) > 0.35 && kind !== 'uppercut' ? 1.18 : 1;
+    const a = (i * Math.PI * 2) / rays + (kind === 'heavy' ? 0.12 : 0.06);
+    const forwardBias =
+      Math.cos(a) > 0.28 && kind !== 'uppercut'
+        ? isPotent
+          ? 1.38
+          : 1.18
+        : 1;
     const upBias = Math.sin(a) < -0.35 && kind === 'uppercut' ? 1.24 : 1;
     const r =
       (i % 2 === 0 ? (i % 4 === 0 ? 17.5 : 13) : 4.1) * forwardBias * upBias;
@@ -666,7 +713,8 @@ export function drawImpactFlash(
   ctx.beginPath();
   for (let i = 0; i < 12; i++) {
     const a = (i * Math.PI * 2) / 12 + 0.12;
-    const r = i % 2 === 0 ? 11 : 3.1;
+    const forwardStretch = isPotent && Math.cos(a) > 0.35 ? 1.24 : 1;
+    const r = (i % 2 === 0 ? (isPotent ? 12.2 : 11) : 3.2) * forwardStretch;
     const pxp = Math.cos(a) * r;
     const pyp = Math.sin(a) * r;
     if (i === 0) ctx.moveTo(pxp, pyp);
@@ -676,11 +724,11 @@ export function drawImpactFlash(
   ctx.fillStyle = '#fef08a';
   ctx.fill();
 
-  // White-hot jagged impact core
+  // White-hot luminous jagged impact core (enlarged for heavy & finisher)
   ctx.beginPath();
   for (let i = 0; i < 10; i++) {
     const a = (i * Math.PI * 2) / 10;
-    const r = i % 2 === 0 ? 6.5 : 2.0;
+    const r = i % 2 === 0 ? (isPotent ? 8.2 : 6.5) : isPotent ? 2.8 : 2.0;
     const pxp = Math.cos(a) * r;
     const pyp = Math.sin(a) * r;
     if (i === 0) ctx.moveTo(pxp, pyp);
@@ -704,10 +752,10 @@ export function drawGroundShockwave(
   reducedMotion = false
 ) {
   const p = Math.max(0, Math.min(1, progress));
-  const ease = 1 - Math.pow(1 - p, 2);
+  const ease = 1 - Math.pow(1 - p, 2.6);
   const rx = Math.max(6, (reducedMotion ? 0.65 : ease) * maxRadius);
   const ry = rx * 0.34;
-  const alpha = (1 - p) * (reducedMotion ? 0.38 : strong ? 0.72 : 0.56);
+  const alpha = Math.pow(1 - p, 1.15) * (reducedMotion ? 0.38 : strong ? 0.78 : 0.56);
   if (alpha <= 0.02) return;
 
   const cx = px(x);
@@ -717,18 +765,28 @@ export function drawGroundShockwave(
   // Crisp outer 16-bit elliptical shock ring on the floor plane
   ctx.globalAlpha = alpha;
   ctx.strokeStyle = color;
-  ctx.lineWidth = strong ? Math.max(1.2, 2.6 * (1 - p * 0.65)) : Math.max(1, 2.0 * (1 - p * 0.65));
+  ctx.lineWidth = strong ? Math.max(1.2, 2.8 * (1 - p * 0.72)) : Math.max(1, 2.0 * (1 - p * 0.68));
   ctx.beginPath();
   ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
   ctx.stroke();
 
-  // Subtle white-hot inner floor ripple during early impact frames
-  if (p < 0.62) {
-    ctx.globalAlpha = (1 - p / 0.62) * (reducedMotion ? 0.3 : 0.6);
-    ctx.strokeStyle = '#ffffff';
-    ctx.lineWidth = 1.2;
+  // Secondary warm inner pressure ring on strong impacts (zero extra particles)
+  if (strong && p < 0.72) {
+    ctx.globalAlpha = (1 - p / 0.72) * (reducedMotion ? 0.25 : 0.52);
+    ctx.strokeStyle = '#fef08a';
+    ctx.lineWidth = 1.4;
     ctx.beginPath();
-    ctx.ellipse(cx, cy, rx * 0.68, ry * 0.68, 0, 0, Math.PI * 2);
+    ctx.ellipse(cx, cy, rx * 0.84, ry * 0.84, 0, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  // Subtle white-hot inner floor ripple during early impact frames
+  if (p < 0.52) {
+    ctx.globalAlpha = (1 - p / 0.52) * (reducedMotion ? 0.3 : 0.65);
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 1.3;
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, rx * 0.62, ry * 0.62, 0, 0, Math.PI * 2);
     ctx.stroke();
   }
 
@@ -1108,8 +1166,8 @@ export function drawVectorPlayer(
       bodyDy = 1.4 + 1.0 * ease;
       leanAngle = startLean + (-0.28 - startLean) * ease;
     } else if (animProgress < 0.68) {
-      // Explosive full-body finisher lunge
-      const snap = Math.min(1, (animProgress - 0.30) / 0.08);
+      // Explosive full-body finisher lunge snapped tightly to engine contact window (animTimer <= 0.30)
+      const snap = Math.min(1, (animProgress - 0.30) / 0.025);
       bodyDx = -2.0 + 9.2 * snap;
       bodyDy = 1.8;
       leanAngle = -0.04 + 0.29 * snap;
@@ -1187,14 +1245,14 @@ export function drawVectorPlayer(
       prevComboAnim === 'punch2' ? 2.8 : prevComboAnim === 'punch1' ? 2.2 : prevComboAnim === 'kick' ? 1.5 : 0;
     const startLean =
       prevComboAnim === 'kick' ? 0.05 : prevComboAnim === 'punch1' || prevComboAnim === 'punch2' ? 0.10 : 0;
-    if (animProgress < 0.22) {
-      // Expressive spring-coiled pivot leveraging previous shoulder/hip momentum
-      const ant = animProgress / 0.22;
+    if (animProgress < 0.26) {
+      // Expressive spring-coiled pivot synchronized right up to engine contact threshold (animTimer <= 0.28)
+      const ant = animProgress / 0.26;
       bodyDx = startDx + (-3.6 - startDx) * ant;
       bodyDy = 1.2 + 1.8 * ant;
       leanAngle = startLean + (-0.12 - startLean) * ant;
     } else if (animProgress < 0.72) {
-      // Dramatic high roundhouse finisher lean-back
+      // Dramatic high roundhouse finisher lean-back snapped to contact frame
       bodyDx = 4.2;
       bodyDy = -2.8;
       leanAngle = -0.32;
@@ -1846,8 +1904,8 @@ export function drawVectorPlayer(
     pxLimb(ctx, -9, -8, -11, -2, 5.6, pal.pantsLowerRear, pal.pantsLowerRearDark);
     drawShoe(-11, -2);
 
-    if (animProgress < 0.22) {
-      // Antecipação: coiled pivot crouch leveraging previous combo stance
+    if (animProgress < 0.26) {
+      // Antecipação: coiled pivot crouch synchronized up to contact threshold (animTimer <= 0.28)
       pxLimb(ctx, bodyDx + 2, hipY, 9, hipY - 8, 6.1, pal.pantsUpperFront, pal.pantsUpperFrontDark);
       pxLimb(ctx, 9, hipY - 8, 6, -2, 5.6, pal.pantsLowerFront, pal.pantsLowerFrontDark);
       drawShoe(7, -2);
@@ -2458,7 +2516,7 @@ export function drawVectorPlayer(
     celFist(ctx, bodyDx + 7.5, torsoTopY, 5.2, skinTone, skinShade);
   } else if (anim === 'kickFinisher') {
     // Expressive forward/chest counterbalance arm during high roundhouse finisher
-    const whip = animProgress >= 0.22 && animProgress < 0.72 ? 1 : 0.4;
+    const whip = animProgress >= 0.26 && animProgress < 0.72 ? 1 : 0.4;
     pxLimb(ctx, bodyDx + 1, torsoTopY + 3.5, bodyDx + 6 + whip * 2, torsoTopY + 4.5, 4.7, pal.sleeveShadow, '#475569');
     pxLimb(ctx, bodyDx + 6 + whip * 2, torsoTopY + 4.5, bodyDx + 7 + whip * 2, torsoTopY - 0.5, 4.3, skinTone, skinShade);
     celFist(ctx, bodyDx + 7.5 + whip * 2, torsoTopY - 1, 5.4, skinTone, skinShade);
@@ -3204,8 +3262,8 @@ export function drawVectorPlayer(
       celFist(ctx, fistX, torsoTopY + 2.2, 5.4, skinTone, skinShade);
     }
   } else if (anim === 'kickFinisher') {
-    if (animProgress < 0.22) {
-      // Coiled spring crouch arms pulled across chest ready to whip
+    if (animProgress < 0.26) {
+      // Coiled spring crouch arms pulled across chest ready to whip at contact frame
       pxLimb(ctx, bodyDx + 2, torsoTopY + 4, bodyDx + 6, torsoTopY + 7, 4.9, pal.sleeveMain, pal.sleeveShadow);
       pxLimb(ctx, bodyDx + 6, torsoTopY + 7, bodyDx + 10, torsoTopY + 3, 4.5, skinTone, skinShade);
       celFist(ctx, bodyDx + 10.5, torsoTopY + 2.8, 5.6, skinTone, skinShade);
@@ -4071,17 +4129,21 @@ export function drawVectorEnemy(
   heavyHurt = false,
   finisherKind?: BossFinisherKind,
   finisherProg = 0,
-  finisherPhaseAngle = 0
+  finisherPhaseAngle = 0,
+  renderAlpha = 1
 ) {
   ctx.save();
 
+  const clampedAlpha = Math.max(0.25, Math.min(1, renderAlpha));
+  const isOccludedFade = clampedAlpha < 0.96;
+
   const isLargeBoss = type === 'boss_cobrador_blindado' || type === 'boss_cobrador';
   const shadowW = isLargeBoss ? 22 : 16;
-  ctx.fillStyle = 'rgba(6, 9, 22, 0.66)';
+  ctx.fillStyle = `rgba(6, 9, 22, ${(0.66 * clampedAlpha).toFixed(2)})`;
   ctx.beginPath();
   ctx.ellipse(x + 2 * facing, y + 0.6, shadowW, 3.8, 0, 0, Math.PI * 2);
   ctx.fill();
-  ctx.fillStyle = 'rgba(6, 9, 22, 0.40)';
+  ctx.fillStyle = `rgba(6, 9, 22, ${(0.40 * clampedAlpha).toFixed(2)})`;
   ctx.beginPath();
   ctx.ellipse(x + 4 * facing, y + 1.2, shadowW + 4, 2.6, 0, 0, Math.PI * 2);
   ctx.fill();
@@ -4089,6 +4151,7 @@ export function drawVectorEnemy(
   // Stink aura for Industry Worker (minimal clean 16-bit dots)
   if (type === 'industria' && stinkActive) {
     ctx.save();
+    ctx.globalAlpha = Math.max(0.55, clampedAlpha);
     ctx.strokeStyle = '#84cc16';
     ctx.lineWidth = 1.5;
     ctx.setLineDash([4, 3]);
@@ -4132,9 +4195,8 @@ export function drawVectorEnemy(
       ctx.scale(facing, 1);
     }
   }
-  if (isKnockdown && Math.floor(time * 20) % 2 === 0) {
-    ctx.globalAlpha = 0.65;
-  }
+  const knockdownBlink = isKnockdown && Math.floor(time * 20) % 2 === 0;
+  const bodyAlpha = clampedAlpha * (knockdownBlink ? 0.65 : 1);
 
   const isEnemyIdle = aiState === 'idle' || aiState === 'cooldown';
   const idleSeed = Math.abs(Math.round(walkPhase * 17)) + type.length * 7;
@@ -4239,13 +4301,14 @@ export function drawVectorEnemy(
     ctx.rotate(windupTilt);
   }
 
-  // Subtle glowing silhouette outline when enemy is about to attack
+  // Subtle glowing silhouette outline when enemy is about to attack (kept full alpha for readability)
   if (isAboutToAttack) {
     const outW = isLargeBoss ? 26 : 19;
     const outH = isLargeBoss ? 54 : 46;
     const outX = -Math.round(outW / 2);
     const outY = -outH + bob;
     ctx.save();
+    ctx.globalAlpha = 1;
     ctx.strokeStyle = `rgba(251, 113, 133, ${(warnPulse * 0.65).toFixed(2)})`;
     ctx.lineWidth = 3.2;
     ctx.beginPath();
@@ -4258,6 +4321,8 @@ export function drawVectorEnemy(
     ctx.stroke();
     ctx.restore();
   }
+
+  ctx.globalAlpha = bodyAlpha;
 
   const drawShoe = (sx: number, sy: number, col = '#0f172a', accent = '#e2e8f0', angled = false) => {
     celSneaker(ctx, sx, sy, col, '#e2e8f0', accent, angled);
@@ -5001,10 +5066,33 @@ export function drawVectorEnemy(
     }
   }
 
+  if (isOccludedFade) {
+    // Keep foreground enemy silhouette contour legible while center stays translucent
+    const outW = isLargeBoss ? 24 : 18;
+    const outH = isLargeBoss ? 50 : 42;
+    const outX = -Math.round(outW / 2);
+    const outY = -outH + bob;
+    ctx.save();
+    ctx.globalAlpha = Math.min(0.86, clampedAlpha + 0.38);
+    ctx.strokeStyle = '#090d16';
+    ctx.lineWidth = 1.35;
+    ctx.beginPath();
+    ctx.roundRect(outX, outY, outW, outH, 5.5);
+    ctx.stroke();
+    ctx.strokeStyle = 'rgba(226, 232, 240, 0.34)';
+    ctx.lineWidth = 0.85;
+    ctx.beginPath();
+    ctx.roundRect(outX + 1, outY + 1, outW - 2, outH - 2, 4.5);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  ctx.globalAlpha = 1;
+
   if (hitFlash) {
     const flashW = isLargeBoss ? 22 : 16;
     const flashH = isLargeBoss ? 48 : 40;
-    ctx.fillStyle = 'rgba(254, 249, 195, 0.56)';
+    ctx.fillStyle = `rgba(254, 249, 195, ${(0.56 * clampedAlpha).toFixed(2)})`;
     ctx.beginPath();
     ctx.roundRect(-Math.round(flashW / 2), -flashH - 2 + bob, flashW, flashH, 5);
     ctx.fill();
@@ -5143,6 +5231,78 @@ export function drawBossFinisherEffect(
     ctx.fillStyle = '#fef08a';
     ctx.fillText(label, 0, 0);
     ctx.restore();
+  }
+
+  ctx.restore();
+}
+
+export function drawWeaponKoEffect(
+  ctx: CanvasRenderingContext2D,
+  sx: number,
+  y: number,
+  z: number,
+  progress: number,
+  kind: 'cane' | 'bag' | 'heavy',
+  dir: 1 | -1
+) {
+  const cy = y - z - 20;
+  const fade = Math.max(0, Math.pow(1 - progress, 1.55));
+  if (fade <= 0.02) return;
+
+  ctx.save();
+  ctx.translate(sx, cy);
+  ctx.globalAlpha = fade;
+
+  const primary = kind === 'cane' ? '#facc15' : kind === 'bag' ? '#38bdf8' : '#fb923c';
+  const secondary = kind === 'cane' ? '#fef08a' : kind === 'bag' ? '#e0f2fe' : '#fef08a';
+  const ringR = 10 + progress * 24;
+
+  ctx.strokeStyle = primary;
+  ctx.lineWidth = Math.max(1.2, 3.2 * (1 - progress * 0.7));
+  ctx.beginPath();
+  ctx.arc(0, 0, ringR, 0, Math.PI * 2);
+  ctx.stroke();
+
+  if (kind === 'cane') {
+    ctx.save();
+    ctx.rotate(dir * progress * Math.PI * 2.8);
+    ctx.strokeStyle = '#92400e';
+    ctx.lineWidth = 3.2;
+    ctx.beginPath();
+    ctx.moveTo(-12, 6);
+    ctx.lineTo(10, -8);
+    ctx.arc(10, -4, 4, -Math.PI * 0.5, Math.PI * 0.65);
+    ctx.stroke();
+    ctx.strokeStyle = secondary;
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.arc(0, 0, ringR * 0.72, -0.8, 1.6);
+    ctx.stroke();
+    ctx.restore();
+  } else if (kind === 'bag') {
+    for (let i = 0; i < 4; i++) {
+      const a = progress * 4.5 + (i * Math.PI) / 2;
+      const dist = 8 + progress * 18;
+      ctx.fillStyle = i % 2 === 0 ? primary : secondary;
+      ctx.strokeStyle = '#090d16';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.roundRect(Math.cos(a) * dist - 3, Math.sin(a) * dist * 0.7 - 2, 6, 4, 1);
+      ctx.fill();
+      ctx.stroke();
+    }
+  } else {
+    for (let i = 0; i < 6; i++) {
+      const a = (i * Math.PI) / 3 + dir * 0.3;
+      const r1 = 6 + progress * 8;
+      const r2 = 16 + progress * 16;
+      ctx.strokeStyle = i % 2 === 0 ? secondary : primary;
+      ctx.lineWidth = 2.2 * (1 - progress * 0.6);
+      ctx.beginPath();
+      ctx.moveTo(Math.cos(a) * r1, Math.sin(a) * r1 * 0.75);
+      ctx.lineTo(Math.cos(a) * r2, Math.sin(a) * r2 * 0.75);
+      ctx.stroke();
+    }
   }
 
   ctx.restore();

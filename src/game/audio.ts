@@ -206,6 +206,14 @@ class RetroAudioSynth {
     this.tone(280, 480, 0.08, 'triangle', 0.07, 0.02);
   }
 
+  public playHeavyPunchImpact() {
+    // Deep sub-bass chest thud + crisp punch-glove transient without excessive gain
+    this.tone(125, 40, 0.15, 'sine', 0.16);
+    this.tone(205, 56, 0.095, 'triangle', 0.12);
+    this.bandpassNoise(0.032, 0.15, 2100, 1.6);
+    this.bandpassNoise(0.018, 0.11, 3400, 1.8);
+  }
+
   public playKickImpact(aerial = false) {
     // Solid martial kick impact (plus golden harmonic snap for Crane / Special kick)
     this.tone(aerial ? 250 : 210, 52, aerial ? 0.14 : 0.11, 'sawtooth', 0.15);
@@ -213,6 +221,14 @@ class RetroAudioSynth {
     if (aerial) {
       this.tone(587.33, 880, 0.09, 'triangle', 0.08, 0.015);
     }
+  }
+
+  public playKickFinisherImpact() {
+    // Weighty roundhouse bass impact + sharp snap transient
+    this.tone(135, 40, 0.16, 'sine', 0.16);
+    this.tone(228, 52, 0.11, 'sawtooth', 0.11);
+    this.bandpassNoise(0.038, 0.15, 2400, 1.5);
+    this.bandpassNoise(0.02, 0.11, 3600, 1.9);
   }
 
   public playMetallicImpact(heavy = false) {

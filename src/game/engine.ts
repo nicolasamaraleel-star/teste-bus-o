@@ -34,6 +34,7 @@ import {
   drawVectorEnemy,
   drawVectorForegroundLayer,
   drawVectorPlayer,
+  drawWeaponKoEffect,
 } from './vectorArt';
 import {
   AchievementBadgeId,
@@ -92,6 +93,16 @@ interface GroundShockwave {
   strong: boolean;
 }
 
+interface WeaponKoEffect {
+  x: number;
+  y: number;
+  z: number;
+  life: number;
+  maxLife: number;
+  kind: 'cane' | 'bag' | 'heavy';
+  dir: 1 | -1;
+}
+
 export class BusBeatEmUpEngine {
   private canvas: HTMLCanvasElement;
   private postProcessor: DitherPostProcessor;
@@ -127,6 +138,10 @@ export class BusBeatEmUpEngine {
   private camX = 0;
   private shakeTimer = 0;
   private shakeMag = 0;
+  private dirShakeTimer = 0;
+  private dirShakeDuration = 0;
+  private dirShakeX = 0;
+  private dirShakeY = 0;
   private comboTintTimer = 0;
   private comboFlickerTimer = 0;
   private comboFlickerIntensity = 0;
@@ -173,8 +188,13 @@ export class BusBeatEmUpEngine {
   private caneHintTimer = 0;
   private shieldBreakHintTimer = 0;
   private bossFinisherEffects: BossFinisherEffect[] = [];
+  private weaponKoEffects: WeaponKoEffect[] = [];
   private impactFlashes: ImpactFlash[] = [];
   private groundShockwaves: GroundShockwave[] = [];
+  private screenCrunchTimer = 0;
+  private screenCrunchMax = 0.16;
+  private screenCrunchFocusX = INTERNAL_WIDTH * 0.5;
+  private screenCrunchFocusY = INTERNAL_HEIGHT * 0.5;
   private bossKoOverlay: {
     life: number;
     maxLife: number;
@@ -208,6 +228,7 @@ export class BusBeatEmUpEngine {
   private perfectHitSeq = 0;
   private levelClearTransition: { timer: number; pose: PlayerAnimState } | null = null;
   private hitChainTimer = 0;
+  private groupAttackStaggerTimer = 0;
   private staticRenderedState: GameState | null = null;
   private pendingBossSpawns: Array<{
     waveId: number;
@@ -438,8 +459,10 @@ export class BusBeatEmUpEngine {
     this.particles = [];
     this.floatingTexts = [];
     this.bossFinisherEffects = [];
+    this.weaponKoEffects = [];
     this.impactFlashes = [];
     this.groundShockwaves = [];
+    this.screenCrunchTimer = 0;
     this.bossKoOverlay = null;
     this.pendingBossSpawns = [];
     this.bossFinisherState = null;
@@ -452,6 +475,12 @@ export class BusBeatEmUpEngine {
     this.comboEdgeParticles = [];
     this.specialReadyParticles = [];
     this.specialReadySpawnAcc = 0;
+    this.shakeTimer = 0;
+    this.shakeMag = 0;
+    this.dirShakeTimer = 0;
+    this.dirShakeDuration = 0;
+    this.dirShakeX = 0;
+    this.dirShakeY = 0;
     this.hitstopTimer = 0;
     this.hitstopFrames = 0;
     this.comboFinisherSlowTimer = 0;
@@ -470,6 +499,7 @@ export class BusBeatEmUpEngine {
     }
     this.player.hitsLanded = 0;
     this.hitChainTimer = 0;
+    this.groupAttackStaggerTimer = 0;
     this.ticketValidated = false;
     this.turnstileCleared = false;
     this.turnstileCrossed = false;
@@ -548,6 +578,7 @@ export class BusBeatEmUpEngine {
       fiscal.facing = 1;
       fiscal.speechText = 'CADÊ O BILHETE?!';
       fiscal.speechTimer = 2.6;
+      fiscal.speechPriority = 'combat';
     }
 
     this.pushHudSnapshot();
@@ -798,7 +829,7 @@ export class BusBeatEmUpEngine {
             vx: dir * 210,
             vy: 0,
             vz: 0,
-            damage: Math.round(20 * (1 + this.shopLoadout.damageMultBonus)),
+            damage: Math.max(1, Math.round(20 * (1 + this.shopLoadout.damageMultBonus) * 0.85)),
             life: 0.72,
             radius: ringRadius,
           });
@@ -958,7 +989,7 @@ export class BusBeatEmUpEngine {
     const strMult = p.strengthBuffTimer > 0 ? 2 : 1;
     const rageMult = p.rageTimer > 0 ? 1.5 : 1;
     const shopDamageMult = 1 + this.shopLoadout.damageMultBonus;
-    const damage = Math.round(28 * strMult * rageMult * shopDamageMult);
+    const damage = Math.max(1, Math.round(28 * strMult * rageMult * shopDamageMult * 0.85));
     const reachX = 96;
     const laneTol = 46;
 
@@ -1523,9 +1554,25 @@ export class BusBeatEmUpEngine {
       skatista: 'SAI DA FRENTE!',
       boss_motorista: 'DESCE PELA TRASEIRA!!',
     };
-    const spawnSpeech = !isChaser ? initialSpeech[type] ?? '' : '';
-
     const st = stats[type];
+    const rawSpeech = !isChaser ? initialSpeech[type] ?? '' : '';
+    const isCombatSpawnSpeech = st.boss || type === 'skatista';
+    const activeCommonSpeechCount = this.enemies.filter(
+      (other) => !other.isBoss && other.speechTimer > 0.6
+    ).length;
+    const spawnSpeech =
+      rawSpeech && (isCombatSpawnSpeech || activeCommonSpeechCount < 1) ? rawSpeech : '';
+
+    let leftCount = 0;
+    let rightCount = 0;
+    for (const other of this.enemies) {
+      if (!other.isBoss && other.hp > 0) {
+        if ((other.flankSide ?? 1) < 0) leftCount++;
+        else rightCount++;
+      }
+    }
+    const assignedFlank: 1 | -1 = rightCount <= leftCount ? 1 : -1;
+
     const enemy: EnemyEntity = {
       id: this.nextId++,
       type,
@@ -1553,10 +1600,28 @@ export class BusBeatEmUpEngine {
       isChaser,
       spinTickTimer: 0,
       speechText: spawnSpeech,
-      speechTimer: spawnSpeech ? 2.6 : 0,
+      speechTimer: spawnSpeech ? 2.2 : 0,
+      speechPriority: isCombatSpawnSpeech ? 'combat' : 'idle',
       halfHpTauntTriggered: false,
       walkPhase: Math.random() * 6,
       guaranteedDrop,
+      flankSide: assignedFlank,
+      slotAngleOffset: (Math.random() - 0.5) * 2,
+      aiSpeedVar: 0.92 + Math.random() * 0.16,
+      repositionTimer: 0.55 + Math.random() * 1.0,
+      repositionBias: Math.random() < 0.5 ? 1 : -1,
+      renderAlpha: 1,
+      tacticalRole: st.boss
+        ? undefined
+        : type === 'vendedor' || type === 'tio_audio' || type === 'skatista'
+          ? 'reposition'
+          : 'prep',
+      roleTimer: 0.35 + Math.random() * 0.55,
+      flankSwitchLockTimer: 0,
+      hesitateTimer: type === 'idosa' ? 0.45 + Math.random() * 0.6 : 0,
+      subModeFlag: false,
+      recoverDirX: 0,
+      recoverDirY: 0,
     };
 
     this.enemies.push(enemy);
@@ -1758,11 +1823,31 @@ export class BusBeatEmUpEngine {
         vx = Math.cos(angle) * speed;
         vy = Math.sin(angle) * speed * 0.24;
         vz = 38 + Math.random() * 62;
+      } else if (atk === 'heavy') {
+        // Heavy punch jet: tight forward energy transfer along punch vector with fast snap dissipation
+        const ricochet = isBoss || isBarrier ? Math.random() < 0.14 : Math.random() < 0.08;
+        const aimDir = ricochet ? -baseDir : baseDir;
+        const spread = (Math.random() - 0.5) * 0.72;
+        const angle = aimDir > 0 ? spread : Math.PI + spread;
+        const speed = (isBoss ? 145 : 130) + Math.random() * 145;
+        vx = Math.cos(angle) * speed;
+        vy = Math.sin(angle) * speed * 0.22;
+        vz = (isBoss ? 48 : 34) + Math.random() * 78;
+      } else if (atk === 'finisher') {
+        // Kick finisher / powerful finisher burst: fast forward arc with crisp dissipation
+        const ricochet = isBoss || isBarrier ? Math.random() < 0.16 : Math.random() < 0.10;
+        const aimDir = ricochet ? -baseDir : baseDir;
+        const spread = (Math.random() - 0.5) * 1.05;
+        const angle = aimDir > 0 ? spread : Math.PI + spread;
+        const speed = (isBoss ? 140 : 125) + Math.random() * 145;
+        vx = Math.cos(angle) * speed;
+        vy = Math.sin(angle) * speed * 0.24;
+        vz = (isBoss ? 80 : 68) + Math.random() * 115;
       } else {
-        // Heavy, kick, finisher, cane, special: strong forward blast + subtle back-ricochet
+        // Kick, cane, special: strong forward blast + subtle back-ricochet
         const ricochet = isBoss || isBarrier ? Math.random() < 0.28 : Math.random() < 0.16;
         const aimDir = ricochet ? -baseDir : baseDir;
-        const coneWidth = atk === 'finisher' ? 1.5 : 1.15;
+        const coneWidth = 1.15;
         const spread = (Math.random() - 0.5) * coneWidth;
         const angle = aimDir > 0 ? spread : Math.PI + spread;
         const speed =
@@ -1774,9 +1859,11 @@ export class BusBeatEmUpEngine {
       }
 
       const swatch = palette[i % palette.length];
-      const maxLife =
-        isBlocked
-          ? 0.18 + Math.random() * 0.1
+      const isPotentAtk = atk === 'heavy' || atk === 'finisher';
+      const maxLife = isBlocked
+        ? 0.18 + Math.random() * 0.1
+        : isPotentAtk
+          ? (isBoss ? 0.22 : 0.17) + Math.random() * 0.1
           : (isBoss ? 0.30 : 0.22) + Math.random() * (options.finisher ? 0.16 : 0.12);
 
       this.pushParticle({
@@ -1793,7 +1880,7 @@ export class BusBeatEmUpEngine {
         maxLife,
         kind: 'spark',
         bounce: isBoss ? 0.46 : 0.36,
-        drag: atk === 'uppercut' ? 1.8 : 2.3,
+        drag: atk === 'uppercut' ? 1.8 : atk === 'heavy' ? 3.1 : atk === 'finisher' ? 2.9 : 2.3,
         gravityScale: atk === 'uppercut' ? 0.72 : 0.85,
         prevX: x,
         prevY: y,
@@ -1807,21 +1894,21 @@ export class BusBeatEmUpEngine {
       for (let i = 0; i < trailCount; i++) {
         const arcRatio = i / Math.max(1, trailCount - 1);
         const startZ = Math.max(8, z - 6 + arcRatio * 14);
-        const maxLife = 0.14 + i * 0.02;
+        const maxLife = options.finisher ? 0.11 + i * 0.015 : 0.14 + i * 0.02;
         this.pushParticle({
           x: x - baseDir * (6 - arcRatio * 6),
           y: y + (arcRatio - 0.5) * 3,
           z: startZ,
-          vx: baseDir * (145 + arcRatio * 55),
+          vx: baseDir * ((options.finisher ? 185 : 145) + arcRatio * 60),
           vy: (arcRatio - 0.5) * 18,
-          vz: 55 + arcRatio * 80,
+          vz: (options.finisher ? 75 : 55) + arcRatio * 80,
           color: options.finisher ? '#fde047' : '#fef08a',
           coolColor: options.finisher ? '#f97316' : '#38bdf8',
           size: options.finisher ? 3 : 2.5,
           life: maxLife,
           maxLife,
           kind: 'kickTrail',
-          drag: 3.4,
+          drag: options.finisher ? 4.2 : 3.4,
           gravityScale: 0.25,
           prevX: x - baseDir * 12,
           prevY: y,
@@ -2009,6 +2096,14 @@ export class BusBeatEmUpEngine {
         this.shakeMag = 0;
       }
     }
+    if (this.dirShakeTimer > 0) {
+      this.dirShakeTimer = Math.max(0, this.dirShakeTimer - dt);
+      if (this.dirShakeTimer === 0) {
+        this.dirShakeDuration = 0;
+        this.dirShakeX = 0;
+        this.dirShakeY = 0;
+      }
+    }
     this.runElapsedSeconds += dt;
     if (this.caneHintTimer > 0) {
       this.caneHintTimer = Math.max(0, this.caneHintTimer - dt);
@@ -2082,10 +2177,22 @@ export class BusBeatEmUpEngine {
         return;
       }
     }
+    if (this.screenCrunchTimer > 0) {
+      this.screenCrunchTimer = Math.max(0, this.screenCrunchTimer - dt);
+    }
+    if (this.groupAttackStaggerTimer > 0) {
+      this.groupAttackStaggerTimer = Math.max(0, this.groupAttackStaggerTimer - dt);
+    }
     for (let i = this.bossFinisherEffects.length - 1; i >= 0; i--) {
       this.bossFinisherEffects[i].life -= dt;
       if (this.bossFinisherEffects[i].life <= 0) {
         this.bossFinisherEffects.splice(i, 1);
+      }
+    }
+    for (let i = this.weaponKoEffects.length - 1; i >= 0; i--) {
+      this.weaponKoEffects[i].life -= dt;
+      if (this.weaponKoEffects[i].life <= 0) {
+        this.weaponKoEffects.splice(i, 1);
       }
     }
     for (let i = this.impactFlashes.length - 1; i >= 0; i--) {
@@ -2119,27 +2226,39 @@ export class BusBeatEmUpEngine {
       }
     }
 
+    // Frame-rate-consistent hitstop: finisher frames remain calibrated to 60 FPS (1/60s per frame)
+    // and leftover dt after expiration carries smoothly into simulation.
+    let simDt = dt;
     if (this.hitstopFrames > 0) {
-      this.hitstopFrames--;
-      return;
+      const frameBudget = this.hitstopFrames / 60;
+      if (frameBudget > simDt) {
+        this.hitstopFrames -= simDt * 60;
+        return;
+      }
+      simDt -= frameBudget;
+      this.hitstopFrames = 0;
     }
 
     if (this.hitstopTimer > 0) {
-      this.hitstopTimer = Math.max(0, this.hitstopTimer - dt);
-      return;
+      if (this.hitstopTimer > simDt) {
+        this.hitstopTimer -= simDt;
+        return;
+      }
+      simDt -= this.hitstopTimer;
+      this.hitstopTimer = 0;
     }
 
-    let worldDt = dt;
+    let worldDt = simDt;
     let timeScale = 1;
     if (this.bossBulletTimeTimer > 0) {
       const decayRate = this.player.anim === 'jumpKick' || this.player.z > 4 ? 1 : 2.2;
-      this.bossBulletTimeTimer = Math.max(0, this.bossBulletTimeTimer - dt * decayRate);
+      this.bossBulletTimeTimer = Math.max(0, this.bossBulletTimeTimer - simDt * decayRate);
       const easeOut = this.bossBulletTimeTimer < 0.14 ? 1 - this.bossBulletTimeTimer / 0.14 : 0;
       timeScale = Math.min(timeScale, 0.28 + easeOut * 0.72);
     }
     if (this.comboFinisherSlowTimer > 0) {
       const finisherSlowMax = Math.max(0.01, this.comboFinisherSlowMax);
-      this.comboFinisherSlowTimer = Math.max(0, this.comboFinisherSlowTimer - dt);
+      this.comboFinisherSlowTimer = Math.max(0, this.comboFinisherSlowTimer - simDt);
       const easeOut = 1 - Math.min(1, this.comboFinisherSlowTimer / finisherSlowMax);
       timeScale = Math.min(
         timeScale,
@@ -2150,7 +2269,7 @@ export class BusBeatEmUpEngine {
         this.comboFinisherSlowMinScale = 0.52;
       }
     }
-    worldDt = dt * timeScale;
+    worldDt = simDt * timeScale;
 
     if (this.bossFinisherState) {
       this.updateBossFinisher(worldDt);
@@ -2170,7 +2289,7 @@ export class BusBeatEmUpEngine {
     const hasStinkyWorker = this.enemies.some((e) => e.type === 'industria' && e.stinkActive);
     const hasDeodorantOnFloor = this.drops.some((d) => d.type === 'desodorante');
     if (hasStinkyWorker && this.player.deodorantCount === 0 && !hasDeodorantOnFloor) {
-      this.deodorantBackupTimer += dt;
+      this.deodorantBackupTimer += simDt;
       if (this.deodorantBackupTimer > 7.5) {
         this.deodorantBackupTimer = 0;
         const dropX = Math.max(this.camX + 60, Math.min(this.camX + INTERNAL_WIDTH - 60, this.player.x + 80));
@@ -2717,9 +2836,11 @@ export class BusBeatEmUpEngine {
     const isKickFinisher = p.anim === 'kickFinisher';
     const isHeavyPunch = p.anim === 'heavyPunch';
     const isUppercutFinisher = p.anim === 'punch3';
+    const isCommonPunch = p.anim === 'punch1' || p.anim === 'punch2';
+    const isCommonKick = p.anim === 'kick';
     const isJumpPunch = p.anim === 'jumpPunch';
-    const isKick = p.anim === 'kick' || p.anim === 'jumpKick' || isKickFinisher;
-    const isGroundKick = p.anim === 'kick' || isKickFinisher;
+    const isKick = isCommonKick || p.anim === 'jumpKick' || isKickFinisher;
+    const isGroundKick = isCommonKick || isKickFinisher;
     const isFinisher = isUppercutFinisher || isKickFinisher;
 
     if (p.anim === 'spray' || p.anim === 'railSlam') {
@@ -2786,7 +2907,10 @@ export class BusBeatEmUpEngine {
     const windMult =
       this.expressWindTimer > 0 && (isRailSpin || p.anim === 'jumpKick' || isSpecial || isSoundSpecial) ? 1.35 : 1;
     const shopDamageMult = 1 + this.shopLoadout.damageMultBonus;
-    const damage = Math.round(baseDamage * strMult * rageMult * windMult * shopDamageMult);
+    const damage = Math.max(
+      1,
+      Math.round(baseDamage * strMult * rageMult * windMult * shopDamageMult * 0.85)
+    );
 
     let hitCount = 0;
     let cleanHitCount = 0;
@@ -3008,9 +3132,9 @@ export class BusBeatEmUpEngine {
       // Differentiated 16-bit impact flash & directional sparks at precise visual contact point
       const hitDir: 1 | -1 = kbDir >= 0 ? 1 : -1;
       const limbReach = isHeavyPunch
-        ? 33
+        ? 36
         : isKickFinisher
-          ? 30
+          ? 32
           : p.anim === 'punch2'
             ? 29
             : p.anim === 'jumpKick'
@@ -3033,12 +3157,14 @@ export class BusBeatEmUpEngine {
       const contactZ = isJumpPunch
         ? Math.max(e.z + 28, p.z + 34)
         : isKickFinisher
-          ? Math.max(e.z + 23, p.z + 25)
-          : p.anim === 'jumpKick'
-            ? Math.max(e.z + 24, p.z + 26)
-            : p.anim === 'kick'
-              ? Math.max(e.z + 16, p.z + 18)
-              : e.z + (p.anim === 'punch2' || isHeavyPunch ? 24 : 22);
+          ? Math.max(e.z + 25, p.z + 27)
+          : isHeavyPunch
+            ? Math.max(e.z + 25, p.z + 27)
+            : p.anim === 'jumpKick'
+              ? Math.max(e.z + 24, p.z + 26)
+              : p.anim === 'kick'
+                ? Math.max(e.z + 16, p.z + 18)
+                : e.z + (p.anim === 'punch2' ? 24 : 22);
 
       const impactKind: ImpactFlashKind =
         isJumpPunch || isUppercutFinisher
@@ -3052,12 +3178,14 @@ export class BusBeatEmUpEngine {
                 : 'jab';
       const flashLife =
         impactKind === 'finisher'
-          ? 0.18
-          : impactKind === 'heavy' || impactKind === 'uppercut'
-            ? 0.16
-            : impactKind === 'kick'
-              ? 0.14
-              : 0.11;
+          ? 0.145
+          : impactKind === 'heavy'
+            ? 0.135
+            : impactKind === 'uppercut'
+              ? 0.16
+              : impactKind === 'kick'
+                ? 0.14
+                : 0.11;
 
       this.impactFlashes.push({
         x: collisionX,
@@ -3077,12 +3205,13 @@ export class BusBeatEmUpEngine {
         kickTrail: isGroundKick,
       });
       if (isKickFinisher || isHeavyPunch || isUppercutFinisher || isSpecial || guardBrokenNow) {
+        const waveX = isKickFinisher || isHeavyPunch ? (collisionX + e.x) * 0.5 : e.x;
         this.spawnGroundShockwave(
-          e.x,
+          waveX,
           e.y,
-          isKickFinisher ? 30 : isSpecial || guardBrokenNow ? 32 : 25,
+          isKickFinisher ? 32 : isHeavyPunch ? 28 : isSpecial || guardBrokenNow ? 32 : 25,
           guardBrokenNow ? '#38bdf8' : isKickFinisher ? '#f97316' : '#facc15',
-          Boolean(isKickFinisher || isSpecial || guardBrokenNow)
+          Boolean(isKickFinisher || isHeavyPunch || isSpecial || guardBrokenNow)
         );
       }
       this.addFloatingText(`-${effectiveDamage}`, e.x, e.y, e.z + 32, guardBrokenNow ? '#38bdf8' : '#f8fafc');
@@ -3112,7 +3241,7 @@ export class BusBeatEmUpEngine {
         const reduced = this.isReducedMotionPreferred();
 
         if (isComboFinisher) {
-          // 3-frame base freeze scaling up to 6 frames as multiple targets are struck simultaneously
+          // 3-frame base freeze (at 60 FPS) scaling up to 6 frames as multiple targets are struck simultaneously
           const finisherFrames = reduced
             ? Math.min(2, 1 + Math.floor(extraTargets / 2))
             : 3 + extraTargets;
@@ -3124,22 +3253,40 @@ export class BusBeatEmUpEngine {
             this.comboFinisherSlowTimer = Math.max(this.comboFinisherSlowTimer, slowDuration);
             this.comboFinisherSlowMinScale = Math.min(this.comboFinisherSlowMinScale, slowMinScale);
           }
-          this.triggerShake(0.18 + extraTargets * 0.035, 3.8 + extraTargets * 0.95);
-        } else if (landedStrongHit || landedGuardBreak) {
-          const baseTimer =
-            isSoundSpecial || landedGuardBreak
-              ? 0.058
-              : isSpecial || isRailSpin || isBagSpin
-                ? 0.045
-                : 0.024;
-          this.hitstopTimer = Math.max(this.hitstopTimer, baseTimer + extraTargets * 0.01);
-          this.triggerShake(
-            (isSoundSpecial || landedGuardBreak ? 0.18 : 0.12) + extraTargets * 0.025,
-            (isSoundSpecial || landedGuardBreak ? 3.8 : 2.5) + extraTargets * 0.7
-          );
+          if (isHeavyPunch || isKickFinisher) {
+            // Directional camera impulse with progressive dissipation along impact vector
+            this.triggerDirectionalShake(
+              p.facing,
+              0.18 + extraTargets * 0.025,
+              4.6 + extraTargets * 0.9,
+              isKickFinisher ? -1.35 : -0.45
+            );
+            this.triggerShake(0.14 + extraTargets * 0.025, 2.2 + extraTargets * 0.55);
+          } else {
+            this.triggerShake(0.18 + extraTargets * 0.035, 3.8 + extraTargets * 0.95);
+          }
+        } else if (isSoundSpecial || landedGuardBreak) {
+          this.hitstopTimer = Math.max(this.hitstopTimer, 0.058);
+          this.triggerShake(0.18, 3.8);
+        } else if (isSpecial || isRailSpin || isBagSpin) {
+          this.hitstopTimer = Math.max(this.hitstopTimer, 0.045);
+          this.triggerShake(0.12, 2.5);
+        } else if (isCommonKick) {
+          // Common ground kick: ~40ms hitstop + discrete directional tremor with progressive dissipation
+          this.hitstopTimer = Math.max(this.hitstopTimer, 0.04);
+          this.triggerDirectionalShake(p.facing, 0.13, 2.6, -0.4);
+        } else if (isJumpPunch) {
+          // Aerial uppercut punch: ~35ms hitstop
+          this.hitstopTimer = Math.max(this.hitstopTimer, 0.035);
+        } else if (isCommonPunch) {
+          // Common ground punch (punch1 / punch2): ~30ms hitstop
+          this.hitstopTimer = Math.max(this.hitstopTimer, 0.03);
+        } else if (landedStrongHit) {
+          // Matrix jumpKick (non-boss), non-spin cane, headphone whip
+          this.hitstopTimer = Math.max(this.hitstopTimer, 0.024);
+          this.triggerShake(0.12, 2.5);
         } else {
-          // Common hits stay brisk & responsive, with only a tiny nudge on multi-target cleaves
-          this.hitstopTimer = Math.max(this.hitstopTimer, 0.016 + extraTargets * 0.006);
+          this.hitstopTimer = Math.max(this.hitstopTimer, 0.03);
         }
 
         this.registerHitChain(cleanHitCount);
@@ -3157,11 +3304,15 @@ export class BusBeatEmUpEngine {
           audio.playWhipImpact();
         } else if (isBagSpin) {
           audio.playBagThump();
-        } else if (isKickFinisher || isSpecial || p.anim === 'jumpKick') {
+        } else if (isKickFinisher) {
+          audio.playKickFinisherImpact();
+        } else if (isSpecial || p.anim === 'jumpKick') {
           audio.playKickImpact(true);
         } else if (isKick) {
           audio.playKickImpact(false);
-        } else if (isUppercutFinisher || isHeavyPunch) {
+        } else if (isHeavyPunch) {
+          audio.playHeavyPunchImpact();
+        } else if (isUppercutFinisher) {
           audio.playUppercutCrack();
         } else if (isSoundSpecial || isRailSpin) {
           audio.playHeavyHit();
@@ -3304,6 +3455,35 @@ export class BusBeatEmUpEngine {
         this.startBossFinisher(e);
       } else {
         this.triggerBossFinisher(e);
+      }
+    } else if (
+      !this.bossFinisherState &&
+      (p.anim === 'cane' ||
+        p.anim === 'bagSpin' ||
+        p.anim === 'bagGuard' ||
+        p.anim === 'heavyPunch' ||
+        p.anim === 'kickFinisher')
+    ) {
+      const koKind: 'cane' | 'bag' | 'heavy' =
+        p.anim === 'cane'
+          ? 'cane'
+          : p.anim === 'bagSpin' || p.anim === 'bagGuard'
+            ? 'bag'
+            : 'heavy';
+      this.weaponKoEffects.push({
+        x: e.x,
+        y: e.y,
+        z: e.z,
+        life: 0.34,
+        maxLife: 0.34,
+        kind: koKind,
+        dir: p.facing,
+      });
+      if (!this.isReducedMotionPreferred()) {
+        this.screenCrunchMax = 0.16;
+        this.screenCrunchTimer = 0.16;
+        this.screenCrunchFocusX = Math.max(76, Math.min(INTERNAL_WIDTH - 76, e.x - this.camX));
+        this.screenCrunchFocusY = Math.max(54, Math.min(INTERNAL_HEIGHT - 36, e.y - e.z - 18));
       }
     }
     this.pushHudSnapshot();
@@ -3915,8 +4095,27 @@ export class BusBeatEmUpEngine {
   }
 
   private triggerShake(duration: number, mag: number) {
+    if (this.isReducedMotionPreferred()) {
+      this.shakeTimer = 0;
+      this.shakeMag = 0;
+      return;
+    }
     this.shakeTimer = Math.max(this.shakeTimer, duration);
     this.shakeMag = Math.max(this.shakeMag, mag);
+  }
+
+  private triggerDirectionalShake(dirX: number, duration: number, magX: number, magY = 0) {
+    if (this.isReducedMotionPreferred()) {
+      this.dirShakeTimer = 0;
+      this.dirShakeDuration = 0;
+      this.dirShakeX = 0;
+      this.dirShakeY = 0;
+      return;
+    }
+    this.dirShakeDuration = duration;
+    this.dirShakeTimer = duration;
+    this.dirShakeX = dirX * magX;
+    this.dirShakeY = magY;
   }
 
   private updateBusEvents(dt: number) {
@@ -4126,16 +4325,123 @@ export class BusBeatEmUpEngine {
 
   private updateEnemies(dt: number) {
     const p = this.player;
-
     const finisherActive = Boolean(this.bossFinisherState);
+    const bounds = this.getActiveWaveBounds();
+    const minBoundX = Math.max(20, bounds.minX + 18);
+    const maxBoundX = Math.min(this.line.busLength - 28, bounds.maxX - 18);
+    const aisleMidY = (AISLE_MIN_Y + AISLE_MAX_Y) * 0.5;
+    const playerBusyAttacking =
+      p.anim !== 'idle' && p.anim !== 'walk' && p.anim !== 'jump' && p.anim !== 'hurt';
+
+    // Zero-allocation scalar coordination pass over common enemies
+    let activeCommonMeleeCount = 0;
+    let activeCommonRangedCount = 0;
+    let flankLeftCount = 0;
+    let flankRightCount = 0;
+    let upperLaneCount = 0;
+    let lowerLaneCount = 0;
+
+    let attacker1Id = -1;
+    let attacker1Score = Infinity;
+    let attacker2Id = -1;
+    let attacker2Score = Infinity;
+    let prep1Id = -1;
+    let prep1Score = Infinity;
+    let prep2Id = -1;
+    let prep2Score = Infinity;
+
+    for (const e of this.enemies) {
+      if (e.hp <= 0 || e.aiState === 'finisherVictim' || e.aiState === 'knockdown' || e.isBoss) {
+        continue;
+      }
+      if ((e.flankSide ?? 1) < 0) flankLeftCount++;
+      else flankRightCount++;
+      if (e.y < p.y - 11) upperLaneCount++;
+      else if (e.y > p.y + 11) lowerLaneCount++;
+
+      const isActiveAttackState =
+        e.aiState === 'windup' ||
+        e.aiState === 'attack' ||
+        e.aiState === 'skateWindup' ||
+        e.aiState === 'skateDash';
+      if (isActiveAttackState) {
+        if (e.activeAttackKind === 'ranged') activeCommonRangedCount++;
+        else activeCommonMeleeCount++;
+        continue;
+      }
+
+      if (
+        e.aiState === 'approach' &&
+        e.tacticalRole !== 'recover' &&
+        e.type !== 'vendedor' &&
+        e.type !== 'tio_audio' &&
+        e.type !== 'skatista'
+      ) {
+        const dxAbs = Math.abs(p.x - e.x);
+        const dyAbs = Math.abs(p.y - e.y);
+        let score = dxAbs + dyAbs * 1.65;
+        if (e.attackCooldown > 0.15) score += 44;
+        if (e.tacticalRole === 'attacker') score -= 15;
+        else if (e.tacticalRole === 'prep') score -= 6;
+
+        // Personality & combat-state priority adjustments
+        if (e.type === 'estudante' && e.hasFrontBarrier && playerBusyAttacking && dxAbs <= 48) {
+          score -= 22;
+        } else if (e.type === 'industria' && e.stinkActive && dxAbs <= 62) {
+          score -= 12;
+        } else if (e.type === 'idosa' && e.subModeFlag && dxAbs > 38) {
+          score += 20;
+        } else if (e.type === 'fiscal' && dxAbs <= 65) {
+          score -= 8;
+        } else if (e.type === 'patricinha' && e.tacticalRole === 'flank' && dyAbs > 20) {
+          score += 10;
+        }
+        score -= (e.id % 5) * 1.1;
+
+        if (score < attacker1Score) {
+          prep2Id = prep1Id;
+          prep2Score = prep1Score;
+          prep1Id = attacker2Id;
+          prep1Score = attacker2Score;
+          attacker2Id = attacker1Id;
+          attacker2Score = attacker1Score;
+          attacker1Id = e.id;
+          attacker1Score = score;
+        } else if (score < attacker2Score) {
+          prep2Id = prep1Id;
+          prep2Score = prep1Score;
+          prep1Id = attacker2Id;
+          prep1Score = attacker2Score;
+          attacker2Id = e.id;
+          attacker2Score = score;
+        } else if (score < prep1Score) {
+          prep2Id = prep1Id;
+          prep2Score = prep1Score;
+          prep1Id = e.id;
+          prep1Score = score;
+        } else if (score < prep2Score) {
+          prep2Id = e.id;
+          prep2Score = score;
+        }
+      }
+    }
+
+    const openMeleeSlots = Math.max(0, 2 - activeCommonMeleeCount);
+    const chosenAttacker1 = openMeleeSlots >= 1 ? attacker1Id : -1;
+    const chosenAttacker2 = openMeleeSlots >= 2 ? attacker2Id : -1;
+    const chosenPrep1 = openMeleeSlots === 0 ? attacker1Id : openMeleeSlots === 1 ? attacker2Id : prep1Id;
+    const chosenPrep2 = openMeleeSlots === 0 ? attacker2Id : openMeleeSlots === 1 ? prep1Id : prep2Id;
 
     for (let i = this.enemies.length - 1; i >= 0; i--) {
       const e = this.enemies[i];
       if (e.aiState === 'finisherVictim') {
+        e.renderAlpha = 1;
         continue;
       }
 
       if (e.aiState === 'knockdown') {
+        e.activeAttackKind = undefined;
+        e.renderAlpha = 1;
         e.stateTimer -= dt;
         e.walkPhase += dt * 4;
         e.x += e.vx * dt;
@@ -4188,6 +4494,9 @@ export class BusBeatEmUpEngine {
       if (e.hitFlashTimer > 0) e.hitFlashTimer = Math.max(0, e.hitFlashTimer - dt);
       if (e.speechTimer > 0) e.speechTimer = Math.max(0, e.speechTimer - dt);
       if (e.attackCooldown > 0) e.attackCooldown = Math.max(0, e.attackCooldown - dt);
+      if (e.flankSwitchLockTimer && e.flankSwitchLockTimer > 0) {
+        e.flankSwitchLockTimer = Math.max(0, e.flankSwitchLockTimer - dt);
+      }
       if (finisherActive) {
         e.attackCooldown = Math.max(e.attackCooldown, 1.0);
         if (
@@ -4199,6 +4508,7 @@ export class BusBeatEmUpEngine {
           e.aiState === 'skateDash'
         ) {
           e.aiState = 'approach';
+          e.activeAttackKind = undefined;
           e.stateTimer = 0;
         }
       }
@@ -4230,6 +4540,7 @@ export class BusBeatEmUpEngine {
       const absDy = Math.abs(dy);
 
       if (e.aiState === 'hurt') {
+        e.activeAttackKind = undefined;
         e.stateTimer -= dt;
         e.x += e.vx * dt;
         e.vx *= Math.pow(0.04, dt);
@@ -4244,6 +4555,17 @@ export class BusBeatEmUpEngine {
         if (e.stateTimer <= 0) {
           e.aiState = 'approach';
           e.heavyHurtTimer = 0;
+          if (!e.isBoss) {
+            if (e.type === 'patricinha' || e.type === 'vendedor' || e.type === 'skatista') {
+              e.tacticalRole = 'recover';
+              e.roleTimer = 0.48 + Math.random() * 0.25;
+              e.recoverDirX = e.x >= p.x ? 1 : -1;
+              e.recoverDirY = e.y >= p.y ? 1 : -1;
+            } else if (e.type === 'industria') {
+              e.tacticalRole = 'prep';
+              e.roleTimer = 0.35;
+            }
+          }
         }
       } else if (e.aiState === 'skateWindup') {
         e.stateTimer -= dt;
@@ -4264,8 +4586,14 @@ export class BusBeatEmUpEngine {
         }
         if (e.stateTimer <= 0) {
           e.aiState = 'cooldown';
+          e.activeAttackKind = undefined;
           e.stateTimer = 0.75 * diff.cooldownMult;
           e.attackCooldown = 2.0 * diff.cooldownMult;
+          // Skater pulls out to recover and rebuild dash runway
+          e.tacticalRole = 'recover';
+          e.roleTimer = 1.05 + Math.random() * 0.35;
+          e.recoverDirX = e.x >= p.x ? 1 : -1;
+          e.recoverDirY = e.y >= aisleMidY ? -1 : 1;
         }
       } else if (e.aiState === 'spinWindup') {
         e.stateTimer -= dt;
@@ -4310,11 +4638,45 @@ export class BusBeatEmUpEngine {
         e.stateTimer -= dt;
         if (e.stateTimer <= 0) {
           e.aiState = 'cooldown';
+          e.activeAttackKind = undefined;
           e.stateTimer = 0.45 * diff.cooldownMult;
           e.attackCooldown = (e.type === 'patricinha' ? 0.85 : 1.15) * diff.cooldownMult;
+          if (!e.isBoss) {
+            if (e.type === 'patricinha') {
+              e.tacticalRole = 'recover';
+              e.roleTimer = 0.68 + Math.random() * 0.26;
+              e.recoverDirX = e.x >= p.x ? 1 : -1;
+              e.recoverDirY = e.y >= aisleMidY ? -1 : 1;
+            } else if (e.type === 'idosa') {
+              e.tacticalRole = 'recover';
+              e.roleTimer = 0.48 + Math.random() * 0.22;
+              e.recoverDirX = e.x >= p.x ? 1 : -1;
+              e.recoverDirY = 0;
+            } else if (e.type === 'vendedor' || e.type === 'tio_audio') {
+              e.tacticalRole = 'reposition';
+              e.roleTimer = 0.55 + Math.random() * 0.35;
+            } else if (e.type === 'industria') {
+              e.tacticalRole = 'prep';
+              e.roleTimer = 0.4;
+            } else {
+              e.tacticalRole = 'flank';
+              e.roleTimer = 0.5 + Math.random() * 0.3;
+            }
+          }
         }
       } else if (e.aiState === 'cooldown') {
+        e.activeAttackKind = undefined;
         e.stateTimer -= dt;
+        // Nimble skirmishers begin clean tactical backstep smoothly instead of freezing stiff
+        if (!e.isBoss && !finisherActive && e.tacticalRole === 'recover') {
+          const backSign = e.recoverDirX || (e.x >= p.x ? 1 : -1);
+          const driftSpd = e.type === 'patricinha' ? 74 : e.type === 'skatista' ? 84 : 42;
+          e.x += backSign * driftSpd * dt;
+          if (e.recoverDirY) {
+            e.y += e.recoverDirY * 32 * dt;
+          }
+          e.walkPhase += dt * 0.55;
+        }
         if (e.stateTimer <= 0) {
           e.aiState = 'approach';
         }
@@ -4330,7 +4692,6 @@ export class BusBeatEmUpEngine {
         const activeArmorLevel = e.guardBrokenTimer > 0 ? 0 : Math.max(0, e.guardHp);
         // Quanto maior o nível de blindagem (guardHp), menor a velocidade do inimigo
         const armorSpeedMult = Math.max(0.42, 1 - activeArmorLevel * 0.09);
-        e.walkPhase += dt * (0.62 + 0.38 * armorSpeedMult);
 
         const baseSpeed =
           e.type === 'patricinha'
@@ -4351,85 +4712,368 @@ export class BusBeatEmUpEngine {
                           ? 48
                           : 58;
         const windSlowMult = this.expressWindTimer > 0 && !e.isBoss ? 0.85 : 1;
+        const speedVar = e.isBoss ? 1 : (e.aiSpeedVar ?? 1);
         const speed =
           baseSpeed *
           (e.isChaser ? Math.max(1, diff.speedMult) : diff.speedMult) *
           windSlowMult *
-          armorSpeedMult;
+          armorSpeedMult *
+          speedVar;
 
-        if (e.type === 'vendedor' || e.type === 'tio_audio') {
-          const idealDist = e.type === 'tio_audio' ? 96 : 82;
-          if (absDx > idealDist + 18) {
-            e.x += Math.sign(dx) * speed * dt;
-          } else if (absDx < 45) {
-            e.x -= Math.sign(dx) * speed * 0.75 * dt;
-          }
-          if (absDy > 8) {
-            e.y += Math.sign(dy) * speed * 0.6 * dt;
-          }
-          if (e.attackCooldown <= 0 && absDx < 155 && absDy < 34) {
+        if (e.isBoss) {
+          // Preserve bosses untouched
+          e.walkPhase += dt * (0.62 + 0.38 * armorSpeedMult);
+          if (
+            (e.type === 'boss_cobrador' || e.type === 'boss_cobrador_blindado' || e.type === 'boss_motorista') &&
+            e.attackCooldown <= 0 &&
+            absDx < 145 &&
+            Math.random() < 0.55
+          ) {
+            e.aiState = 'spinWindup';
+            e.stateTimer = 0.65 * diff.windupMult;
+            e.speechText = e.type === 'boss_motorista' ? 'VOLANTE TURBO!' : 'ROLETA GIRATÓRIA!';
+            e.speechTimer = 1.2;
+            e.speechPriority = 'combat';
+          } else if (
+            e.type === 'boss_fiscal_chefe' &&
+            e.attackCooldown <= 0 &&
+            absDx > 80 &&
+            absDx < 200
+          ) {
+            e.aiState = 'windup';
+            e.stateTimer = 0.4 * diff.windupMult;
+            e.speechText = 'CADÊ O BILHETE?!';
+            e.speechTimer = 1.1;
+            e.speechPriority = 'combat';
+          } else if (
+            e.type === 'boss_motorista' &&
+            e.attackCooldown <= 0 &&
+            absDx > 65 &&
+            absDx < 205
+          ) {
             e.aiState = 'windup';
             e.stateTimer = 0.42 * diff.windupMult;
-            if (e.type === 'tio_audio') {
-              e.speechText = Math.random() < 0.5 ? 'ESCUTA ESSE ZAP!' : 'SOM NO TALO!';
-            } else {
-              e.speechText = Math.random() < 0.6 ? 'Cuidado com o rapa!' : 'CHICLETE!';
+            e.speechText = 'BUZINA NA ORELHA!';
+            e.speechTimer = 1.1;
+            e.speechPriority = 'combat';
+          } else {
+            if (absDx > 28) {
+              e.x += Math.sign(dx) * speed * dt;
             }
-            e.speechTimer = 1.4;
+            if (absDy > 8) {
+              e.y += Math.sign(dy) * speed * 0.68 * dt;
+            }
+            if (absDx <= 34 && absDy <= 15 && e.attackCooldown <= 0) {
+              e.aiState = 'windup';
+              e.stateTimer = 0.44 * diff.windupMult;
+            }
           }
-        } else if (e.type === 'skatista' && e.attackCooldown <= 0 && absDx >= 55 && absDx < 175 && absDy < 22) {
-          e.aiState = 'skateWindup';
-          e.stateTimer = 0.45 * diff.windupMult;
-          e.speechText = 'SAI DA FRENTE!';
-          e.speechTimer = 1.0;
-        } else if (
-          (e.type === 'boss_cobrador' || e.type === 'boss_cobrador_blindado' || e.type === 'boss_motorista') &&
-          e.attackCooldown <= 0 &&
-          absDx < 145 &&
-          Math.random() < 0.55
-        ) {
-          e.aiState = 'spinWindup';
-          e.stateTimer = 0.65 * diff.windupMult;
-          e.speechText = e.type === 'boss_motorista' ? 'VOLANTE TURBO!' : 'ROLETA GIRATÓRIA!';
-          e.speechTimer = 1.2;
-        } else if (
-          (e.type === 'fiscal' || e.type === 'boss_fiscal_chefe') &&
-          e.attackCooldown <= 0 &&
-          absDx > 80 &&
-          absDx < 200
-        ) {
-          e.aiState = 'windup';
-          e.stateTimer = 0.4 * diff.windupMult;
-          e.speechText = 'CADÊ O BILHETE?!';
-          e.speechTimer = 1.1;
-        } else if (
-          e.type === 'boss_motorista' &&
-          e.attackCooldown <= 0 &&
-          absDx > 65 &&
-          absDx < 205
-        ) {
-          e.aiState = 'windup';
-          e.stateTimer = 0.42 * diff.windupMult;
-          e.speechText = 'BUZINA NA ORELHA!';
-          e.speechTimer = 1.1;
         } else {
-          if (absDx > 28) {
-            e.x += Math.sign(dx) * speed * dt;
-          }
-          if (absDy > 8) {
-            e.y += Math.sign(dy) * speed * 0.68 * dt;
-          }
-          if (absDx <= 34 && absDy <= 15 && e.attackCooldown <= 0) {
-            e.aiState = 'windup';
-            e.stateTimer = (e.type === 'patricinha' ? 0.32 : 0.44) * diff.windupMult;
-            if (e.type === 'idosa' && Math.random() < 0.65) {
-              e.speechText = 'Eu quero ir pra Lapa!';
-              e.speechTimer = 1.4;
-            } else if (e.type === 'estudante' && Math.random() < 0.65) {
-              e.speechText = 'Olha o SENAI!';
-              e.speechTimer = 1.4;
+          // Common enemy dynamic tactical role update & personality-driven execution
+          const leftRoom = p.x - minBoundX;
+          const rightRoom = maxBoundX - p.x;
+          const openSide: 1 | -1 = rightRoom >= leftRoom ? 1 : -1;
+
+          let side: 1 | -1 = e.flankSide ?? (e.x >= p.x ? 1 : -1);
+          if (side === -1 && leftRoom < 42 && rightRoom >= 42) side = 1;
+          else if (side === 1 && rightRoom < 42 && leftRoom >= 42) side = -1;
+
+          e.roleTimer = (e.roleTimer ?? 0.4) - dt;
+          if (e.roleTimer <= 0) {
+            e.roleTimer = 0.45 + Math.random() * 0.48;
+            e.repositionBias = -(e.repositionBias ?? 1);
+
+            // Hysteresis-guarded flank rebalance so enemies don't ping-pong sides
+            if ((e.flankSwitchLockTimer ?? 0) <= 0 && leftRoom > 58 && rightRoom > 58) {
+              if (side === 1 && flankRightCount - flankLeftCount >= 2) {
+                e.flankSide = -1;
+                e.flankSwitchLockTimer = 1.6;
+                flankRightCount--;
+                flankLeftCount++;
+                side = -1;
+              } else if (side === -1 && flankLeftCount - flankRightCount >= 2) {
+                e.flankSide = 1;
+                e.flankSwitchLockTimer = 1.6;
+                flankLeftCount--;
+                flankRightCount++;
+                side = 1;
+              }
+            }
+
+            if (e.tacticalRole === 'recover') {
+              e.tacticalRole =
+                e.type === 'vendedor' || e.type === 'tio_audio' || e.type === 'skatista'
+                  ? 'reposition'
+                  : 'flank';
             }
           }
+
+          // Dynamic melee role promotion/assignment (attacker -> prep -> flank/reposition)
+          if (
+            e.tacticalRole !== 'recover' &&
+            e.type !== 'vendedor' &&
+            e.type !== 'tio_audio' &&
+            e.type !== 'skatista'
+          ) {
+            if (e.id === chosenAttacker1 || e.id === chosenAttacker2) {
+              e.tacticalRole = 'attacker';
+              if (e.id === chosenAttacker2 && leftRoom > 48 && rightRoom > 48) {
+                const a1 = this.enemies.find((c) => c.id === chosenAttacker1);
+                if (a1 && (a1.flankSide ?? 1) === side) {
+                  side = (side === 1 ? -1 : 1) as 1 | -1;
+                }
+              }
+            } else if (e.id === chosenPrep1 || e.id === chosenPrep2) {
+              e.tacticalRole = 'prep';
+            } else {
+              e.tacticalRole = e.type === 'industria' ? 'reposition' : 'flank';
+            }
+          }
+
+          const role = e.tacticalRole ?? 'prep';
+          const canStartCommonMelee =
+            this.groupAttackStaggerTimer <= 0 && activeCommonMeleeCount < 2;
+          const canStartCommonRanged =
+            this.groupAttackStaggerTimer <= 0 &&
+            activeCommonRangedCount < (activeCommonMeleeCount >= 2 ? 1 : 2);
+
+          let movedThisTick = false;
+          const moveToward = (tx: number, ty: number, multX = 1, multY = 0.72, deadX = 5, deadY = 4) => {
+            const clampedTx = Math.max(minBoundX, Math.min(maxBoundX, tx));
+            const clampedTy = Math.max(AISLE_MIN_Y, Math.min(AISLE_MAX_Y, ty));
+            const toX = clampedTx - e.x;
+            const toY = clampedTy - e.y;
+            if (Math.abs(toX) > deadX) {
+              const rampX = Math.min(1, Math.abs(toX) / 14);
+              e.x += Math.sign(toX) * speed * multX * rampX * dt;
+              movedThisTick = true;
+            }
+            if (Math.abs(toY) > deadY) {
+              const rampY = Math.min(1, Math.abs(toY) / 12);
+              e.y += Math.sign(toY) * speed * multY * rampY * dt;
+              movedThisTick = true;
+            }
+          };
+
+          const tryStartMeleeWindup = (windupBase: number) => {
+            if (!canStartCommonMelee || absDx > 34 || absDy > 15 || e.attackCooldown > 0) {
+              return false;
+            }
+            activeCommonMeleeCount++;
+            this.groupAttackStaggerTimer = 0.16;
+            e.aiState = 'windup';
+            e.activeAttackKind = 'melee';
+            e.stateTimer = windupBase * diff.windupMult;
+            const activeSpeechCount = this.enemies.filter((other) => other.speechTimer > 0.2).length;
+            if (activeSpeechCount < 2) {
+              if (e.type === 'idosa' && Math.random() < 0.36) {
+                e.speechText = 'Eu quero ir pra Lapa!';
+                e.speechPriority = 'idle';
+                e.speechTimer = 1.2;
+              } else if (e.type === 'estudante' && Math.random() < 0.36) {
+                e.speechText = 'Olha o SENAI!';
+                e.speechPriority = 'idle';
+                e.speechTimer = 1.2;
+              }
+            }
+            return true;
+          };
+
+          // Keep escape corridor open when 3+ enemies crowd the player
+          const openEscapeDirY = upperLaneCount <= lowerLaneCount ? -1 : 1;
+
+          // Personality-specific movement & attack coordination per common enemy type
+          if (e.type === 'vendedor') {
+            // Vendedor: maintain safe distance (82-116px) and retreat / sidestep when pressured (<58px)
+            const laneY = p.y + (e.slotAngleOffset ?? 0) * 18;
+            if (absDx < 58) {
+              e.tacticalRole = 'recover';
+              const retreatSide: 1 | -1 =
+                e.x >= p.x ? (rightRoom > 36 ? 1 : -1) : leftRoom > 36 ? -1 : 1;
+              const escapeY =
+                Math.abs(p.x - e.x) < 40 || (retreatSide === 1 && rightRoom < 42) || (retreatSide === -1 && leftRoom < 42)
+                  ? p.y + (e.y >= aisleMidY ? 26 : -26)
+                  : laneY;
+              moveToward(p.x + retreatSide * 102, escapeY, 1.06, 0.85, 5, 4);
+            } else {
+              e.tacticalRole = 'reposition';
+              moveToward(p.x + side * 96, laneY, 0.92, 0.65, 8, 5);
+            }
+            if (
+              canStartCommonRanged &&
+              e.attackCooldown <= 0 &&
+              absDx >= 46 &&
+              absDx < 155 &&
+              absDy < 34
+            ) {
+              activeCommonRangedCount++;
+              this.groupAttackStaggerTimer = 0.16;
+              e.aiState = 'windup';
+              e.activeAttackKind = 'ranged';
+              e.stateTimer = 0.42 * diff.windupMult;
+              const isGum = Math.random() >= 0.45;
+              e.speechText = isGum ? 'CHICLETE!' : 'Cuidado com o rapa!';
+              e.speechPriority = isGum ? 'combat' : 'idle';
+              e.speechTimer = 1.3;
+            }
+          } else if (e.type === 'tio_audio') {
+            // Tio do Audio: reposition to align horizontally with player for clean sound_ring shots
+            if (absDx < 54) {
+              e.tacticalRole = 'recover';
+              moveToward(p.x + openSide * 112, p.y + (e.y >= aisleMidY ? 18 : -18), 0.96, 0.78, 6, 4);
+            } else {
+              e.tacticalRole = 'reposition';
+              const standOff = 108 + ((e.id % 3) - 1) * 12;
+              moveToward(p.x + side * standOff, p.y, 0.86, 0.88, 10, 4);
+            }
+            if (
+              canStartCommonRanged &&
+              e.attackCooldown <= 0 &&
+              absDx >= 50 &&
+              absDx < 155 &&
+              absDy < 18
+            ) {
+              activeCommonRangedCount++;
+              this.groupAttackStaggerTimer = 0.16;
+              e.aiState = 'windup';
+              e.activeAttackKind = 'ranged';
+              e.stateTimer = 0.42 * diff.windupMult;
+              e.speechText = Math.random() < 0.5 ? 'ESCUTA ESSE ZAP!' : 'SOM NO TALO!';
+              e.speechPriority = 'combat';
+              e.speechTimer = 1.3;
+            }
+          } else if (e.type === 'skatista') {
+            // Skatista: seek clear horizontal runway (85-135px) for skate dashes, pull away during recovery
+            if (role === 'recover' || (absDx < 62 && e.attackCooldown > 0.25)) {
+              const escapeY = p.y + (e.y >= aisleMidY ? -22 : 22);
+              moveToward(p.x + openSide * 118, escapeY, 1.08, 0.78, 8, 4);
+            } else {
+              e.tacticalRole = 'prep';
+              const runwayX = p.x + openSide * 102;
+              moveToward(runwayX, p.y, 0.98, 0.78, 8, 4);
+              if (
+                canStartCommonRanged &&
+                e.attackCooldown <= 0 &&
+                absDx >= 55 &&
+                absDx < 175 &&
+                absDy < 22
+              ) {
+                activeCommonRangedCount++;
+                this.groupAttackStaggerTimer = 0.16;
+                e.aiState = 'skateWindup';
+                e.activeAttackKind = 'ranged';
+                e.stateTimer = 0.45 * diff.windupMult;
+                e.speechText = 'SAI DA FRENTE!';
+                e.speechPriority = 'combat';
+                e.speechTimer = 1.0;
+              } else if (absDx <= 34 && absDy <= 15 && e.attackCooldown <= 0) {
+                tryStartMeleeWindup(0.42);
+              }
+            }
+          } else if (e.type === 'fiscal') {
+            // Fiscal: intercept protagonist trajectory using player velocity lead
+            const leadX = Math.max(-42, Math.min(42, p.vx * 0.28));
+            const leadY = Math.max(-18, Math.min(18, p.vy * 0.24));
+            if (
+              canStartCommonRanged &&
+              e.attackCooldown <= 0 &&
+              absDx > 80 &&
+              absDx < 200 &&
+              absDy < 26
+            ) {
+              activeCommonRangedCount++;
+              this.groupAttackStaggerTimer = 0.16;
+              e.aiState = 'windup';
+              e.activeAttackKind = 'ranged';
+              e.stateTimer = 0.4 * diff.windupMult;
+              e.speechText = 'CADÊ O BILHETE?!';
+              e.speechPriority = 'combat';
+              e.speechTimer = 1.1;
+            } else if (role === 'attacker') {
+              moveToward(p.x + leadX + side * 28, p.y + leadY, 1.02, 0.82, 4, 3);
+              tryStartMeleeWindup(0.42);
+            } else if (role === 'prep') {
+              moveToward(p.x + leadX + side * 50, p.y + leadY * 1.15, 0.95, 0.78, 5, 4);
+            } else {
+              const interceptY = p.y + (leadY !== 0 ? Math.sign(leadY) * 18 : openEscapeDirY * -16);
+              moveToward(p.x + leadX + side * 66, interceptY, 0.86, 0.72, 6, 4);
+            }
+          } else if (e.type === 'idosa') {
+            // Idosa: alternate cautious hesitation pauses with determined cane-swing approaches
+            e.hesitateTimer = (e.hesitateTimer ?? 0.6) - dt;
+            if (e.hesitateTimer <= 0) {
+              e.subModeFlag = !e.subModeFlag;
+              e.hesitateTimer = e.subModeFlag ? 0.45 + Math.random() * 0.35 : 1.05 + Math.random() * 0.55;
+            }
+            const laneOffset = (e.slotAngleOffset ?? 0) * 6;
+            if (role === 'recover') {
+              const recSide = e.recoverDirX || side;
+              moveToward(p.x + recSide * 50, p.y + laneOffset, 0.72, 0.55, 5, 4);
+            } else if (e.subModeFlag && absDx > 38) {
+              // Hesitation beat: cautious slow micro-pace while observing player
+              moveToward(p.x + side * 46, p.y + laneOffset, 0.28, 0.25, 6, 4);
+            } else if (role === 'attacker') {
+              moveToward(p.x + side * 27, p.y + laneOffset * 0.6, 1.08, 0.74, 4, 3);
+              tryStartMeleeWindup(0.44);
+            } else if (role === 'prep') {
+              moveToward(p.x + side * 48, p.y + laneOffset * 1.4, 0.84, 0.68, 5, 4);
+            } else {
+              const flankY = p.y + (e.y >= p.y ? 20 : -20);
+              moveToward(p.x + side * 66, flankY, 0.74, 0.62, 6, 4);
+            }
+          } else if (e.type === 'estudante') {
+            // Estudante: leverage backpack front shield & punish player recovery/attack openings
+            const laneOffset = (e.slotAngleOffset ?? 0) * 4;
+            if (!e.hasFrontBarrier && e.guardBrokenTimer > 0) {
+              // Shield broken: keep cautious mid-distance until backpack recovers
+              const safeY = p.y + (e.y >= aisleMidY ? -18 : 18);
+              moveToward(p.x + side * 64, safeY, 0.84, 0.72, 6, 4);
+            } else if (role === 'attacker') {
+              const strikeDist = playerBusyAttacking && absDx <= 46 ? 26 : 29;
+              moveToward(p.x + side * strikeDist, p.y + laneOffset, 0.96, 0.74, 4, 3);
+              tryStartMeleeWindup(0.44);
+            } else if (role === 'prep') {
+              // Vanguard guard stance facing player
+              moveToward(p.x + side * 40, p.y + laneOffset, 0.88, 0.7, 4, 3);
+            } else {
+              const flankY = p.y + (e.y >= p.y ? 17 : -17);
+              moveToward(p.x + side * 58, flankY, 0.78, 0.66, 5, 4);
+            }
+          } else if (e.type === 'patricinha') {
+            // Patricinha: agile lateral approaches & fast diagonal retreats after attacks
+            const sideYSign = (e.recoverDirY || (e.y >= aisleMidY ? -1 : 1)) as 1 | -1;
+            if (role === 'recover') {
+              const backSide = e.recoverDirX || side;
+              moveToward(p.x + backSide * 68, p.y + sideYSign * 22, 1.18, 0.9, 5, 4);
+            } else if (role === 'attacker') {
+              // Cut diagonally inward when close enough laterally
+              const cutInY = absDx > 42 ? p.y + sideYSign * 18 : p.y + (e.slotAngleOffset ?? 0) * 4;
+              moveToward(p.x + side * 27, cutInY, 1.06, 0.88, 4, 3);
+              tryStartMeleeWindup(0.32);
+            } else if (role === 'prep') {
+              moveToward(p.x + side * 48, p.y + sideYSign * 20, 1.02, 0.85, 5, 4);
+            } else {
+              // Agile lateral flank while keeping one lane clear
+              const flankY = p.y + sideYSign * 24;
+              moveToward(p.x + side * 62, flankY, 0.96, 0.82, 6, 4);
+            }
+          } else {
+            // Operario Industria (and any fallback): persistent territorial center-aisle pressure
+            const laneOffset = (e.slotAngleOffset ?? 0) * 5;
+            const stinkBoost = e.stinkActive ? 1.08 : 1;
+            if (role === 'attacker') {
+              moveToward(p.x + side * 27, p.y + laneOffset, 1.0 * stinkBoost, 0.74, 4, 3);
+              tryStartMeleeWindup(0.44);
+            } else if (role === 'prep') {
+              moveToward(p.x + side * 38, p.y + laneOffset * 1.2, 0.94 * stinkBoost, 0.7, 4, 4);
+            } else {
+              // Persistent pressure right behind frontline without fleeing
+              const pressY = p.y + (openEscapeDirY > 0 ? -12 : 12);
+              moveToward(p.x + side * 48, pressY, 0.86 * stinkBoost, 0.66, 5, 4);
+            }
+          }
+
+          e.walkPhase += dt * (movedThisTick ? 0.62 + 0.38 * armorSpeedMult : 0.16);
         }
       }
 
@@ -4444,6 +5088,94 @@ export class BusBeatEmUpEngine {
 
       e.x = Math.max(20, Math.min(this.line.busLength - 28, e.x));
       e.y = Math.max(AISLE_MIN_Y, Math.min(AISLE_MAX_Y, e.y));
+    }
+
+    // Soft pairwise separation for common enemies (never applied during hurt, knockdown, finisher, or active attacks)
+    if (!finisherActive && this.enemies.length > 1) {
+      const aisleMidY = (AISLE_MIN_Y + AISLE_MAX_Y) * 0.5;
+      for (let i = 0; i < this.enemies.length; i++) {
+        const e = this.enemies[i];
+        if (
+          e.isBoss ||
+          e.hp <= 0 ||
+          (e.aiState !== 'approach' && e.aiState !== 'idle' && e.aiState !== 'cooldown')
+        ) {
+          continue;
+        }
+
+        let sepX = 0;
+        let sepY = 0;
+        for (let j = 0; j < this.enemies.length; j++) {
+          if (i === j) continue;
+          const other = this.enemies[j];
+          if (other.hp <= 0 || other.aiState === 'knockdown' || other.aiState === 'finisherVictim') {
+            continue;
+          }
+          const rx = other.isBoss ? 34 : 26;
+          const ry = other.isBoss ? 17 : 13;
+          const dxPair = e.x - other.x;
+          const dyPair = e.y - other.y;
+          const normDist = Math.hypot(dxPair / rx, dyPair / ry);
+          if (normDist < 1) {
+            const strength = (1 - normDist) * 60;
+            if (normDist < 0.001) {
+              const angle = ((e.id % 6) * Math.PI) / 3;
+              sepX += Math.cos(angle) * strength;
+              sepY += Math.sin(angle) * strength * 0.65;
+            } else {
+              const ux = dxPair / rx / normDist;
+              const uy = dyPair / ry / normDist;
+              sepX += ux * strength * 1.1;
+              sepY += uy * strength * 0.72;
+            }
+          }
+        }
+
+        const sepMag = Math.hypot(sepX, sepY);
+        if (sepMag > 0.01) {
+          const cap = Math.min(56, sepMag) / sepMag;
+          sepX *= cap;
+          sepY *= cap;
+
+          // Attenuate separation into boundaries and slide orthogonally to avoid wall bunching/jitter
+          if (e.x <= minBoundX + 10 && sepX < 0) {
+            sepY += (e.y > aisleMidY ? -1 : 1) * Math.abs(sepX) * 0.45;
+            sepX = 0;
+          } else if (e.x >= maxBoundX - 10 && sepX > 0) {
+            sepY += (e.y > aisleMidY ? -1 : 1) * Math.abs(sepX) * 0.45;
+            sepX = 0;
+          }
+          if (e.y <= AISLE_MIN_Y + 4 && sepY < 0) {
+            sepX += (e.x >= p.x ? 1 : -1) * Math.abs(sepY) * 0.45;
+            sepY = 0;
+          } else if (e.y >= AISLE_MAX_Y - 4 && sepY > 0) {
+            sepX += (e.x >= p.x ? 1 : -1) * Math.abs(sepY) * 0.45;
+            sepY = 0;
+          }
+
+          e.x = Math.max(minBoundX, Math.min(maxBoundX, e.x + sepX * dt));
+          e.y = Math.max(AISLE_MIN_Y, Math.min(AISLE_MAX_Y, e.y + sepY * dt));
+        }
+      }
+    }
+
+    // Smooth foreground occlusion fade detection for common enemies blocking the protagonist
+    const pTop = p.y - p.z - 40;
+    const pBot = p.y - p.z + 2;
+    const alphaRate = Math.min(1, dt * 11);
+    for (const e of this.enemies) {
+      if (e.isBoss || e.aiState === 'finisherVictim' || e.aiState === 'knockdown') {
+        e.renderAlpha = 1;
+        continue;
+      }
+      const overlapX = 24 - Math.abs(e.x - p.x);
+      const eTop = e.y - e.z - 40;
+      const eBot = e.y - e.z + 2;
+      const overlapY = Math.min(eBot, pBot) - Math.max(eTop, pTop);
+      const isOccludingPlayer = e.y > p.y + 1 && overlapX > 7 && overlapY > 14;
+      const targetAlpha = isOccludingPlayer ? 0.42 : 1;
+      const curAlpha = e.renderAlpha ?? 1;
+      e.renderAlpha = Math.abs(targetAlpha - curAlpha) < 0.01 ? targetAlpha : curAlpha + (targetAlpha - curAlpha) * alphaRate;
     }
   }
 
@@ -4985,10 +5717,33 @@ export class BusBeatEmUpEngine {
     ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
     ctx.scale(RENDER_SCALE, RENDER_SCALE);
 
-    if (this.shakeTimer > 0) {
-      const sx = (Math.random() - 0.5) * 2 * this.shakeMag;
-      const sy = (Math.random() - 0.5) * 2 * this.shakeMag;
-      ctx.translate(sx, sy);
+    if (!this.isReducedMotionPreferred()) {
+      if (this.screenCrunchTimer > 0 && this.screenCrunchMax > 0) {
+        const cp = 1 - this.screenCrunchTimer / this.screenCrunchMax;
+        const zoomAmt = Math.sin(cp * Math.PI) * 0.058;
+        if (zoomAmt > 0.001) {
+          const zoom = 1 + zoomAmt;
+          ctx.translate(this.screenCrunchFocusX, this.screenCrunchFocusY);
+          ctx.scale(zoom, zoom);
+          ctx.translate(-this.screenCrunchFocusX, -this.screenCrunchFocusY);
+        }
+      }
+      let camOffsetX = 0;
+      let camOffsetY = 0;
+      if (this.shakeTimer > 0) {
+        camOffsetX += (Math.random() - 0.5) * 2 * this.shakeMag;
+        camOffsetY += (Math.random() - 0.5) * 2 * this.shakeMag;
+      }
+      if (this.dirShakeTimer > 0 && this.dirShakeDuration > 0) {
+        const progress = 1 - this.dirShakeTimer / this.dirShakeDuration;
+        const decay = (1 - progress) * (1 - progress);
+        const pulse = Math.cos(progress * Math.PI * 3);
+        camOffsetX += this.dirShakeX * decay * pulse;
+        camOffsetY += this.dirShakeY * decay * pulse;
+      }
+      if (camOffsetX !== 0 || camOffsetY !== 0) {
+        ctx.translate(camOffsetX, camOffsetY);
+      }
     }
 
     const activeFlicker =
@@ -5078,6 +5833,14 @@ export class BusBeatEmUpEngine {
       });
     }
 
+    const playerSx = this.player.x - this.camX;
+    const playerHeadBox = {
+      x1: playerSx - 16,
+      y1: this.player.y - this.player.z - 45,
+      x2: playerSx + 16,
+      y2: this.player.y - this.player.z - 5,
+    };
+
     for (const e of this.enemies) {
       const sortY =
         e.aiState === 'finisherVictim' && e.finisherKind === 'ground_pound'
@@ -5103,15 +5866,27 @@ export class BusBeatEmUpEngine {
             Boolean(e.heavyHurtTimer && e.heavyHurtTimer > 0),
             e.finisherKind,
             e.finisherProg ?? 0,
-            e.finisherPhaseAngle ?? 0
+            e.finisherPhaseAngle ?? 0,
+            e.isBoss ? 1 : (e.renderAlpha ?? 1)
           );
           if (!e.isBoss && e.aiState !== 'finisherVictim' && (e.hp < e.maxHp || e.guardMax > 0)) {
             const bw = 26;
             const bx = sx - bw / 2;
             const by = e.y - e.z - (e.guardMax > 0 ? 48 : 44);
+            const bh = e.guardMax > 0 ? 9.5 : 6;
+            const overlapsPlayerHead =
+              bx + bw + 1 > playerHeadBox.x1 &&
+              bx - 1 < playerHeadBox.x2 &&
+              by + bh > playerHeadBox.y1 &&
+              by - 1 < playerHeadBox.y2;
+
+            ctx.save();
+            if (overlapsPlayerHead && e.hitFlashTimer <= 0) {
+              ctx.globalAlpha = 0.36;
+            }
             ctx.fillStyle = '#0f172a';
             ctx.beginPath();
-            ctx.roundRect(bx - 1, by - 1, bw + 2, e.guardMax > 0 ? 9.5 : 6, 2);
+            ctx.roundRect(bx - 1, by - 1, bw + 2, bh, 2);
             ctx.fill();
             ctx.fillStyle = e.stinkActive ? '#84cc16' : '#ef4444';
             ctx.beginPath();
@@ -5131,48 +5906,6 @@ export class BusBeatEmUpEngine {
                 ctx.fillRect(segX, gy, segW, 2.5);
               }
             }
-          }
-          if (e.speechTimer > 0 && e.speechText) {
-            ctx.save();
-            ctx.font = e.isBoss ? 'bold 7px sans-serif' : 'bold 6.5px sans-serif';
-            const tw = ctx.measureText(e.speechText).width;
-            const padX = e.isBoss ? 6 : 4;
-            const boxH = e.isBoss ? 14 : 12;
-            const boxW = tw + padX * 2;
-            const bx = Math.max(6, Math.min(INTERNAL_WIDTH - boxW - 6, sx - boxW / 2));
-            const ty = e.y - e.z - (e.isBoss ? 66 : 54);
-
-            // Subtle comic shadow for boss dialogue boxes
-            if (e.isBoss) {
-              ctx.fillStyle = '#090d16';
-              ctx.beginPath();
-              ctx.roundRect(bx + 1.5, ty - 8 + 1.5, boxW, boxH, 4.5);
-              ctx.fill();
-            }
-
-            ctx.fillStyle = e.isBoss ? '#fef9c3' : '#ffffff';
-            ctx.strokeStyle = '#0f172a';
-            ctx.lineWidth = e.isBoss ? 1.8 : 1.5;
-            ctx.beginPath();
-            ctx.roundRect(bx, ty - 8, boxW, boxH, 4.5);
-            ctx.fill();
-            ctx.stroke();
-
-            // Comic pointer tail pointing toward character head
-            if (e.isBoss) {
-              const tailX = Math.max(bx + 8, Math.min(bx + boxW - 8, sx));
-              ctx.fillStyle = '#fef9c3';
-              ctx.beginPath();
-              ctx.moveTo(tailX - 3.5, ty - 8 + boxH - 0.5);
-              ctx.lineTo(tailX, ty - 8 + boxH + 4.5);
-              ctx.lineTo(tailX + 3.5, ty - 8 + boxH - 0.5);
-              ctx.closePath();
-              ctx.fill();
-              ctx.stroke();
-            }
-
-            ctx.fillStyle = '#0f172a';
-            ctx.fillText(e.speechText, bx + padX, ty + (e.isBoss ? 1.5 : 0.5));
             ctx.restore();
           }
         },
@@ -5215,6 +5948,116 @@ export class BusBeatEmUpEngine {
     drawables.sort((a, b) => a.y - b.y);
     for (const item of drawables) {
       item.draw();
+    }
+
+    // 3b. Prioritized enemy speech bubbles (avoids covering protagonist & stacking bubbles)
+    {
+      type BubbleCand = { enemy: EnemyEntity; priority: number; sx: number };
+      const candidates: BubbleCand[] = [];
+      for (const e of this.enemies) {
+        if (e.speechTimer <= 0 || !e.speechText) continue;
+        const sx = e.x - this.camX;
+        if (sx < -24 || sx > INTERNAL_WIDTH + 24) continue;
+        const isTelegraph =
+          e.speechPriority === 'combat' ||
+          e.aiState === 'windup' ||
+          e.aiState === 'skateWindup' ||
+          e.aiState === 'spinWindup';
+        const priority = e.isBoss ? 3 : isTelegraph ? 2 : 1;
+        candidates.push({ enemy: e, priority, sx });
+      }
+      candidates.sort((a, b) => b.priority - a.priority || b.enemy.speechTimer - a.enemy.speechTimer);
+
+      const placedRects: Array<{ x1: number; y1: number; x2: number; y2: number }> = [];
+      let commonBubblesShown = 0;
+
+      const rectsOverlap = (
+        a: { x1: number; y1: number; x2: number; y2: number },
+        b: { x1: number; y1: number; x2: number; y2: number }
+      ) => a.x1 < b.x2 && a.x2 > b.x1 && a.y1 < b.y2 && a.y2 > b.y1;
+
+      for (const { enemy: e, priority, sx } of candidates) {
+        if (!e.isBoss && commonBubblesShown >= 2) continue;
+
+        ctx.save();
+        ctx.font = e.isBoss ? 'bold 7px sans-serif' : 'bold 6.5px sans-serif';
+        const tw = ctx.measureText(e.speechText).width;
+        const padX = e.isBoss ? 6 : 4;
+        const boxH = e.isBoss ? 14 : 12;
+        const boxW = tw + padX * 2;
+        const bx = Math.max(6, Math.min(INTERNAL_WIDTH - boxW - 6, sx - boxW / 2));
+        let ty = e.y - e.z - (e.isBoss ? 66 : 54);
+
+        const makeRect = (topY: number) => ({
+          x1: bx - 2,
+          y1: topY - 10,
+          x2: bx + boxW + 2,
+          y2: topY - 8 + boxH + (e.isBoss ? 5 : 2),
+        });
+
+        let rect = makeRect(ty);
+        if (priority === 1) {
+          // Idle chatter: suppress if it overlaps protagonist or another bubble
+          if (
+            rectsOverlap(rect, playerHeadBox) ||
+            placedRects.some((r) => rectsOverlap(rect, r))
+          ) {
+            ctx.restore();
+            continue;
+          }
+        } else {
+          // Combat telegraphs & boss dialogue: nudge upward cleanly out of overlap if needed
+          for (let step = 0; step < 3; step++) {
+            const hitsPlayer = rectsOverlap(rect, playerHeadBox);
+            const hitsBubble = placedRects.some((r) => rectsOverlap(rect, r));
+            if (!hitsPlayer && !hitsBubble) break;
+            if (ty - 14 < 18) break;
+            ty -= 14;
+            rect = makeRect(ty);
+          }
+          if (!e.isBoss && placedRects.some((r) => rectsOverlap(rect, r))) {
+            ctx.restore();
+            continue;
+          }
+          if (!e.isBoss && rectsOverlap(rect, playerHeadBox)) {
+            ctx.globalAlpha = 0.76;
+          }
+        }
+
+        placedRects.push(rect);
+        if (!e.isBoss) commonBubblesShown++;
+
+        if (e.isBoss) {
+          ctx.fillStyle = '#090d16';
+          ctx.beginPath();
+          ctx.roundRect(bx + 1.5, ty - 8 + 1.5, boxW, boxH, 4.5);
+          ctx.fill();
+        }
+
+        ctx.fillStyle = e.isBoss ? '#fef9c3' : '#ffffff';
+        ctx.strokeStyle = '#0f172a';
+        ctx.lineWidth = e.isBoss ? 1.8 : 1.5;
+        ctx.beginPath();
+        ctx.roundRect(bx, ty - 8, boxW, boxH, 4.5);
+        ctx.fill();
+        ctx.stroke();
+
+        if (e.isBoss) {
+          const tailX = Math.max(bx + 8, Math.min(bx + boxW - 8, sx));
+          ctx.fillStyle = '#fef9c3';
+          ctx.beginPath();
+          ctx.moveTo(tailX - 3.5, ty - 8 + boxH - 0.5);
+          ctx.lineTo(tailX, ty - 8 + boxH + 4.5);
+          ctx.lineTo(tailX + 3.5, ty - 8 + boxH - 0.5);
+          ctx.closePath();
+          ctx.fill();
+          ctx.stroke();
+        }
+
+        ctx.fillStyle = '#0f172a';
+        ctx.fillText(e.speechText, bx + padX, ty + (e.isBoss ? 1.5 : 0.5));
+        ctx.restore();
+      }
     }
 
     // 4. Projectiles
@@ -5311,6 +6154,12 @@ export class BusBeatEmUpEngine {
         fx.secondaryColor,
         fx.style
       );
+    }
+
+    // 5b-2. Heavy / Weapon Common KO Visual Flourish
+    for (const ko of this.weaponKoEffects) {
+      const progress = 1 - Math.max(0, Math.min(1, ko.life / ko.maxLife));
+      drawWeaponKoEffect(ctx, ko.x - this.camX, ko.y, ko.z, progress, ko.kind, ko.dir);
     }
 
     // 5c. Dynamic Special Illumination Overlay (spotlight + radial color glow on combat plane)
