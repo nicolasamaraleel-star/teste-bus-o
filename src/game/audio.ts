@@ -359,6 +359,30 @@ class RetroAudioSynth {
     this.tone(440, 220, 0.12, 'sawtooth', 0.09, 0.12);
   }
 
+  public playMotoristaHornAnticipate() {
+    // Crisp pre-horn click/mini-chirp signaling horn press before sonic blast
+    this.tone(420, 520, 0.045, 'square', 0.055);
+  }
+
+  public playMotoristaTurboSpin() {
+    // Bus engine turbo rev + steering-wheel cyclone whoosh
+    this.tone(125, 340, 0.22, 'sawtooth', 0.095);
+    this.bandpassNoise(0.18, 0.095, 980, 1.3, 0.02);
+  }
+
+  public playMotoristaAccelerate() {
+    // Bus diesel rev + tire launch burst for Acelerada dash
+    this.tone(95, 290, 0.19, 'sawtooth', 0.115);
+    this.bandpassNoise(0.12, 0.105, 1300, 1.2, 0.01);
+  }
+
+  public playMotoristaStomp() {
+    // Heavy bus-floor brake stomp thump for Freada Brusca shockwave
+    this.tone(118, 38, 0.24, 'sine', 0.155);
+    this.tone(168, 52, 0.16, 'triangle', 0.12);
+    this.bandpassNoise(0.085, 0.11, 520, 1.1);
+  }
+
   public playBossAlert() {
     this.tone(220, 180, 0.14, 'sawtooth', 0.13);
     this.tone(220, 180, 0.14, 'sawtooth', 0.13, 0.18);

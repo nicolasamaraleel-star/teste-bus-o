@@ -8,6 +8,7 @@ import {
 } from './shop';
 import {
   BossFinisherKind,
+  BossMotoristaAttackKind,
   EnemyType,
   ImpactFlashKind,
   ItemType,
@@ -4130,7 +4131,11 @@ export function drawVectorEnemy(
   finisherKind?: BossFinisherKind,
   finisherProg = 0,
   finisherPhaseAngle = 0,
-  renderAlpha = 1
+  renderAlpha = 1,
+  bossAttackMode?: BossMotoristaAttackKind,
+  bossAnimProg = 0,
+  bossEnraged = false,
+  reducedMotion = false
 ) {
   ctx.save();
 
@@ -4170,9 +4175,70 @@ export function drawVectorEnemy(
   const isAboutToAttack =
     !isFinisherVictim &&
     (aiState === 'windup' || aiState === 'spinWindup' || aiState === 'skateWindup');
-  const warnPulse = isAboutToAttack ? 0.42 + Math.sin(time * 20) * 0.16 : 0;
+  const warnPulse = isAboutToAttack ? 0.42 + (reducedMotion ? 0 : Math.sin(time * 20) * 0.16) : 0;
 
-  if (isAboutToAttack) {
+  // Floor telegraphs: Motorista Furioso has attack-specific floor readability (dash lane / stomp zone / horn / turbo)
+  if (type === 'boss_motorista' && isAboutToAttack) {
+    const pNorm = Math.max(0, Math.min(1, bossAnimProg));
+    ctx.save();
+    if (bossAttackMode === 'freada_brusca') {
+      const stompRx = 48;
+      const stompRy = 16.5;
+      const pulseAlpha = reducedMotion ? 0.45 : 0.42 + Math.sin(time * 22) * 0.18;
+      ctx.fillStyle = `rgba(251, 146, 60, ${(0.12 + pNorm * 0.14).toFixed(2)})`;
+      ctx.beginPath();
+      ctx.ellipse(px(x), px(y), stompRx, stompRy, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = `rgba(250, 204, 21, ${pulseAlpha.toFixed(2)})`;
+      ctx.lineWidth = 1.8;
+      ctx.setLineDash([5, 3]);
+      ctx.beginPath();
+      ctx.ellipse(px(x), px(y), stompRx, stompRy, 0, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      if (!reducedMotion) {
+        const innerRx = Math.max(6, stompRx * (0.25 + pNorm * 0.75));
+        ctx.strokeStyle = 'rgba(251, 113, 133, 0.72)';
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.ellipse(px(x), px(y), innerRx, innerRx * 0.34, 0, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    } else if (bossAttackMode === 'acelerada') {
+      const laneLen = 58;
+      const laneAlpha = 0.45 + pNorm * 0.42;
+      ctx.fillStyle = `rgba(250, 204, 21, ${(0.16 + pNorm * 0.14).toFixed(2)})`;
+      ctx.fillRect(
+        facing > 0 ? px(x + 8) : px(x - 8 - laneLen),
+        px(y - 3),
+        laneLen,
+        6
+      );
+      ctx.strokeStyle = `rgba(251, 113, 133, ${laneAlpha.toFixed(2)})`;
+      ctx.lineWidth = 1.6;
+      for (let c = 0; c < 3; c++) {
+        const cx = x + facing * (18 + c * 15 + (reducedMotion ? 0 : (time * 32) % 8));
+        ctx.beginPath();
+        ctx.moveTo(cx - facing * 4, y - 4);
+        ctx.lineTo(cx + facing * 3, y);
+        ctx.lineTo(cx - facing * 4, y + 4);
+        ctx.stroke();
+      }
+    } else if (aiState === 'spinWindup' || bossAttackMode === 'volante_turbo') {
+      ctx.strokeStyle = `rgba(56, 189, 248, ${(0.5 + pNorm * 0.38).toFixed(2)})`;
+      ctx.lineWidth = 1.8;
+      ctx.beginPath();
+      ctx.ellipse(px(x), px(y), 22, 7.5, 0, 0, Math.PI * 2);
+      ctx.stroke();
+    } else {
+      ctx.strokeStyle = `rgba(250, 204, 21, ${(warnPulse * 0.9).toFixed(2)})`;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.ellipse(px(x), px(y), shadowW * 0.65, 4.8, 0, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.restore();
+  } else if (isAboutToAttack) {
     ctx.strokeStyle = `rgba(251, 113, 133, ${(warnPulse * 0.85).toFixed(2)})`;
     ctx.lineWidth = 1.4;
     ctx.beginPath();
@@ -4185,7 +4251,10 @@ export function drawVectorEnemy(
   const isKnockdown = aiState === 'knockdown';
   const isSpinning = aiState === 'spinAttack';
   const isHurt = aiState === 'hurt' || isFinisherVictim;
-  if (!isSpinning && !isFinisherVictim) {
+  if (isSpinning && type === 'boss_motorista') {
+    const spinFacing = reducedMotion ? facing : Math.cos(time * 20) >= 0 ? 1 : -1;
+    ctx.scale(spinFacing, 1);
+  } else if (!isSpinning && !isFinisherVictim) {
     ctx.scale(facing, 1);
   } else if (isFinisherVictim) {
     if (finisherKind === 'giant_swing') {
@@ -4198,7 +4267,8 @@ export function drawVectorEnemy(
   const knockdownBlink = isKnockdown && Math.floor(time * 20) % 2 === 0;
   const bodyAlpha = clampedAlpha * (knockdownBlink ? 0.65 : 1);
 
-  const isEnemyIdle = aiState === 'idle' || aiState === 'cooldown';
+  const isSeatRest = aiState === 'seatRest';
+  const isEnemyIdle = aiState === 'idle' || aiState === 'cooldown' || isSeatRest;
   const idleSeed = Math.abs(Math.round(walkPhase * 17)) + type.length * 7;
   const idleCycle = (time + (idleSeed % 11) * 0.43) % 4.4;
   const idleFidgetEnv =
@@ -4206,11 +4276,13 @@ export function drawVectorEnemy(
       ? Math.sin(((idleCycle - 1.2) / 1.3) * Math.PI)
       : 0;
   const strideFrame =
-    aiState === 'approach' ? ((Math.floor(walkPhase * 8) % 4) + 4) % 4 : 0;
+    aiState === 'approach' || aiState === 'seatApproach'
+      ? ((Math.floor(walkPhase * 8) % 4) + 4) % 4
+      : 0;
   const strideMap = [-5, 0, 5, 0];
   const walkSwing = strideMap[strideFrame];
   const bob =
-    aiState === 'approach' && strideFrame % 2 === 1
+    (aiState === 'approach' || aiState === 'seatApproach') && strideFrame % 2 === 1
       ? -1
       : isEnemyIdle
         ? Math.floor(time * 2.1 + idleSeed * 0.7) % 2 === 0
@@ -4297,8 +4369,33 @@ export function drawVectorEnemy(
   } else if (isHurt) {
     ctx.translate(-3.5, 0.5);
     ctx.rotate(-0.30);
+  } else if (isSeatRest) {
+    ctx.translate(0, 4);
+    ctx.rotate(-0.04);
   } else {
-    ctx.rotate(windupTilt);
+    if (type === 'boss_motorista') {
+      if (aiState === 'windup' && bossAttackMode === 'acelerada') {
+        ctx.translate(-2.5, 1);
+        ctx.rotate(-0.16);
+      } else if (aiState === 'attack' && bossAttackMode === 'acelerada') {
+        ctx.translate(2, 0.5);
+        ctx.rotate(0.18);
+      } else if (aiState === 'windup' && bossAttackMode === 'freada_brusca') {
+        ctx.translate(-1, -1.5);
+        ctx.rotate(-0.12);
+      } else if (aiState === 'attack' && bossAttackMode === 'freada_brusca') {
+        ctx.scale(1.06, 0.92);
+      } else if (aiState === 'spinWindup') {
+        ctx.translate(0, 1.5);
+        ctx.rotate(0.14);
+      } else if (aiState === 'cooldown' && bossAttackMode === 'acelerada') {
+        ctx.rotate(0.08);
+      } else {
+        ctx.rotate(windupTilt);
+      }
+    } else {
+      ctx.rotate(windupTilt);
+    }
   }
 
   // Subtle glowing silhouette outline when enemy is about to attack (kept full alpha for readability)
@@ -4342,26 +4439,27 @@ export function drawVectorEnemy(
     useSandals = false,
     sandalSkin = '#d99b6c'
   ) => {
-    const rearFootX = -stanceSpread + walkSwing * 0.9;
-    const frontFootX = stanceSpread - walkSwing * 0.9;
-    const rearKneeX = rearFootX * 0.5 + 1.5;
-    const frontKneeX = frontFootX * 0.55 + 2.2;
-    const kneeY = hipY * 0.52;
+    const rearFootX = isSeatRest ? 4 : -stanceSpread + walkSwing * 0.9;
+    const frontFootX = isSeatRest ? 9 : stanceSpread - walkSwing * 0.9;
+    const rearKneeX = isSeatRest ? 5.5 : rearFootX * 0.5 + 1.5;
+    const frontKneeX = isSeatRest ? 10.5 : frontFootX * 0.55 + 2.2;
+    const kneeY = isSeatRest ? hipY + 2 : hipY * 0.52;
+    const footY = isSeatRest ? -6 : -2;
 
     pxLimb(ctx, -2, hipY, rearKneeX, kneeY, thickness + 0.4, thighCol, thighDark);
-    pxLimb(ctx, rearKneeX, kneeY, rearFootX, -2, thickness, shinCol, shinDark);
+    pxLimb(ctx, rearKneeX, kneeY, rearFootX, footY, thickness, shinCol, shinDark);
     if (useSandals) {
-      celSandal(ctx, rearFootX, -1.5, shoeCol, sandalSkin);
+      celSandal(ctx, rearFootX, footY + 0.5, shoeCol, sandalSkin);
     } else {
-      drawShoe(rearFootX, -2, shoeCol, shoeAccent);
+      drawShoe(rearFootX, footY, shoeCol, shoeAccent);
     }
 
     pxLimb(ctx, 2, hipY, frontKneeX, kneeY, thickness + 0.4, thighCol, thighDark);
-    pxLimb(ctx, frontKneeX, kneeY, frontFootX, -2, thickness, shinCol, shinDark);
+    pxLimb(ctx, frontKneeX, kneeY, frontFootX, footY, thickness, shinCol, shinDark);
     if (useSandals) {
-      celSandal(ctx, frontFootX + 1, -1.5, shoeCol, sandalSkin);
+      celSandal(ctx, frontFootX + 1, footY + 0.5, shoeCol, sandalSkin);
     } else {
-      drawShoe(frontFootX + 1, -2, shoeCol, shoeAccent);
+      drawShoe(frontFootX + 1, footY, shoeCol, shoeAccent);
     }
   };
 
@@ -4937,15 +5035,59 @@ export function drawVectorEnemy(
     }
 
     case 'boss_motorista': {
-      const by = -52 + bob;
-      drawEnemyLegs(-18, '#0f172a', '#020617', '#1e293b', '#0f172a', '#020617', '#475569', 6.2, 7.5);
+      const mMode = bossAttackMode;
+      const isDashWindup = aiState === 'windup' && mMode === 'acelerada';
+      const isDashExec = aiState === 'attack' && mMode === 'acelerada';
+      const isStompWindup = aiState === 'windup' && mMode === 'freada_brusca';
+      const isStompExec = aiState === 'attack' && mMode === 'freada_brusca';
+      const isHornWindup = aiState === 'windup' && mMode === 'buzina';
+      const isHornExec = aiState === 'attack' && mMode === 'buzina';
+      const isTurboWindup = aiState === 'spinWindup';
+      const isTurboSpin = isSpinning;
 
-      // Rear arm gripping steering wheel / guard
-      pxLimb(ctx, -4, by + 15, -8, by + 21, 5.2, '#0284c7', '#075985');
-      celRolledCuff(ctx, -7, by + 20, 0.3, 5.0, '#38bdf8', '#075985');
-      celFist(ctx, -6, by + 22, 5.2, '#d99b6c', '#a1623b');
+      const by = (isDashWindup || isTurboWindup ? -50 : isStompExec ? -49 : -52) + bob;
 
-      // Transit driver blue uniform + dark vest + red driver tie
+      // Custom legs for Freada Brusca raised stomp foot or dash/spin stance
+      if (isStompWindup) {
+        const liftH = 6 + Math.min(1, bossAnimProg) * 5;
+        pxLimb(ctx, -2, -18, -5, -10, 6.4, '#0f172a', '#020617');
+        pxLimb(ctx, -5, -10, -7, -2, 6.2, '#1e293b', '#0f172a');
+        drawShoe(-7, -2, '#020617', '#475569');
+
+        pxLimb(ctx, 2, -18, 8, -11 - liftH * 0.5, 6.4, '#0f172a', '#020617');
+        pxLimb(ctx, 8, -11 - liftH * 0.5, 7, -2 - liftH, 6.2, '#1e293b', '#0f172a');
+        drawShoe(7, -2 - liftH, '#020617', '#facc15');
+      } else if (isDashExec) {
+        drawEnemyLegs(-18, '#0f172a', '#020617', '#1e293b', '#0f172a', '#020617', '#facc15', 6.2, 9.5);
+      } else {
+        drawEnemyLegs(-18, '#0f172a', '#020617', '#1e293b', '#0f172a', '#020617', '#475569', 6.2, 7.5);
+      }
+
+      // Acelerada heel skid sparks on windup or horizontal speed lines on dash execution
+      if (isDashWindup && !reducedMotion) {
+        pxRect(ctx, -15, -4, 4, 2, '#facc15');
+        pxRect(ctx, -20, -7, 3, 2, '#cbd5e1');
+      } else if (isDashExec && !reducedMotion) {
+        ctx.save();
+        ctx.strokeStyle = 'rgba(250, 204, 21, 0.78)';
+        ctx.lineWidth = 1.6;
+        ctx.beginPath();
+        ctx.moveTo(-14, by + 18);
+        ctx.lineTo(-27, by + 18);
+        ctx.moveTo(-12, by + 26);
+        ctx.lineTo(-24, by + 26);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      // Rear arm gripping steering wheel / horn / brace
+      const rearHandX = isHornWindup || isTurboWindup ? 7 : isDashWindup ? -10 : -6;
+      const rearHandY = isHornWindup ? by + 19 : isTurboWindup ? by + 17 : by + 22;
+      pxLimb(ctx, -4, by + 15, (rearHandX - 4) * 0.5, by + 19, 5.2, '#0284c7', '#075985');
+      celRolledCuff(ctx, -6, by + 19, 0.3, 5.0, '#38bdf8', '#075985');
+      celFist(ctx, rearHandX, rearHandY, 5.2, '#d99b6c', '#a1623b');
+
+      // Transit driver blue uniform + dark vest + red driver tie (preserved intact)
       celEnemyTorso(-10, by + 12, 21, 21, '#0284c7', '#075985', '#38bdf8', 1.8);
       fillStrokeRoundRect(ctx, -9, by + 12, 6, 19, 1.8, '#1e293b', '#090d16', 1.05);
       fillStrokeRoundRect(ctx, 4, by + 12, 6, 19, 1.8, '#1e293b', '#090d16', 1.05);
@@ -4961,14 +5103,78 @@ export function drawVectorEnemy(
       pxRect(ctx, -5, by - 6, 10, 2, '#facc15');
       fillStrokeRoundRect(ctx, 2, by - 1, 7.5, 2.4, 1, '#020617', '#090d16', 0.9);
 
-      // Lead arm driving detachable Bus Steering Wheel weapon
-      const wheelX = aiState === 'attack' || isSpinning ? 13 : 10;
-      const wheelY = by + 21;
+      // Expressivity boost below 50% HP: fiery brow/anger vein tick & subtle exhaust heat spark
+      if (bossEnraged && !isHurt) {
+        const sparkJitter = reducedMotion ? 0 : Math.sin(time * 24) * 1.2;
+        pxRect(ctx, -9, by - 2 + sparkJitter, 2.5, 2.5, '#f97316', '#090d16', 0.7);
+        pxRect(ctx, 7, by - 3 - sparkJitter, 2.5, 2.5, '#facc15', '#090d16', 0.7);
+      }
+
+      // Lead arm & detachable Bus Steering Wheel weapon — distinct per attack
+      const wheelX = isTurboSpin
+        ? Math.cos(time * 22) * 16
+        : isTurboWindup
+          ? 12
+          : isDashExec
+            ? 16
+            : isDashWindup
+              ? 6
+              : isHornWindup
+                ? 11
+                : isHornExec
+                  ? 14
+                  : aiState === 'attack'
+                    ? 13
+                    : 10;
+      const wheelY = isTurboSpin
+        ? by + 20 + Math.sin(time * 22) * 3
+        : isTurboWindup
+          ? by + 16
+          : isDashWindup
+            ? by + 24
+            : isHornWindup
+              ? by + 19
+              : isStompWindup
+                ? by + 15
+                : by + 21;
+
       pxLimb(ctx, 4, by + 15, 7, by + 18, 5.2, '#0284c7', '#075985');
       celRolledCuff(ctx, 7, by + 18, -0.3, 5.0, '#38bdf8', '#075985');
       pxLimb(ctx, 7, by + 18, wheelX, wheelY, 4.6, '#d99b6c', '#a1623b');
 
-      const wheelSpin = isSpinning ? time * 18 : 0;
+      // Volante Turbo dedicated cyclone arcs (clearly different from Cobrador's turnstile metal arms)
+      if (isTurboSpin) {
+        ctx.save();
+        ctx.strokeStyle = '#facc15';
+        ctx.lineWidth = 2.6;
+        ctx.beginPath();
+        ctx.ellipse(0, by + 20, 24, 9.5, 0, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.strokeStyle = '#38bdf8';
+        ctx.lineWidth = 1.6;
+        ctx.beginPath();
+        ctx.ellipse(0, by + 20, 19, 6.5, 0, 0.4, Math.PI * 1.65);
+        ctx.stroke();
+        ctx.restore();
+      } else if (isTurboWindup) {
+        ctx.save();
+        ctx.strokeStyle = '#38bdf8';
+        ctx.lineWidth = 1.8;
+        ctx.beginPath();
+        ctx.arc(wheelX, wheelY, 15.5, -1.1, 1.1);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      const wheelSpin = isTurboSpin
+        ? time * 24
+        : isTurboWindup
+          ? time * 9
+          : isDashWindup
+            ? -0.45
+            : isDashExec
+              ? 0.45
+              : 0;
       ctx.save();
       ctx.translate(wheelX, wheelY);
       ctx.rotate(wheelSpin);
@@ -4977,13 +5183,47 @@ export function drawVectorEnemy(
       ctx.beginPath();
       ctx.arc(0, 0, 12, 0, Math.PI * 2);
       ctx.stroke();
-      ctx.strokeStyle = isSpinning ? '#facc15' : '#334155';
+      ctx.strokeStyle = isTurboSpin || isTurboWindup || bossEnraged ? '#facc15' : '#334155';
       ctx.lineWidth = 2.8;
       ctx.stroke();
       pxRect(ctx, -10, -1.5, 20, 3, '#475569');
       pxRect(ctx, -1.5, 0, 3, 10, '#475569');
-      fillStrokeCircle(ctx, 0, 0, 3.2, '#facc15', '#090d16', 1);
+      fillStrokeCircle(
+        ctx,
+        0,
+        0,
+        isHornWindup || isHornExec ? 4.0 : 3.2,
+        isHornWindup || isHornExec ? '#fb923c' : '#facc15',
+        '#090d16',
+        1
+      );
       ctx.restore();
+
+      // Horn visual anticipation rings on Buzina windup / blast cone on execution
+      if (isHornWindup) {
+        const hornPulse = reducedMotion ? 8 : 6 + ((time * 24) % 9);
+        ctx.save();
+        ctx.strokeStyle = 'rgba(250, 204, 21, 0.85)';
+        ctx.lineWidth = 1.8;
+        ctx.beginPath();
+        ctx.arc(wheelX, wheelY, hornPulse, -0.95, 0.95);
+        ctx.stroke();
+        ctx.strokeStyle = 'rgba(249, 115, 22, 0.72)';
+        ctx.lineWidth = 1.3;
+        ctx.beginPath();
+        ctx.arc(wheelX, wheelY, hornPulse + 4, -0.7, 0.7);
+        ctx.stroke();
+        ctx.restore();
+      } else if (isHornExec) {
+        ctx.save();
+        ctx.strokeStyle = '#fef08a';
+        ctx.lineWidth = 2.0;
+        ctx.beginPath();
+        ctx.arc(wheelX + 3, wheelY, 10, -0.85, 0.85);
+        ctx.stroke();
+        ctx.restore();
+      }
+
       celFist(ctx, wheelX - 2, wheelY, 5.2, '#d99b6c', '#a1623b');
       break;
     }
@@ -5112,6 +5352,18 @@ export function drawVectorEnemy(
   }
 
   ctx.restore();
+
+  if (aiState === 'seatRest') {
+    const floatY = reducedMotion ? 0 : Math.sin(time * 5.2) * 2;
+    const hx = px(x);
+    const hy = px(y - z - 58 + floatY);
+    ctx.save();
+    fillStrokeRoundRect(ctx, hx - 7, hy - 7, 14, 14, 3, '#065f46', '#090d16', 1.2);
+    ctx.fillStyle = '#34d399';
+    ctx.fillRect(hx - 1.5, hy - 4.5, 3, 9);
+    ctx.fillRect(hx - 4.5, hy - 1.5, 9, 3);
+    ctx.restore();
+  }
 
   if (aiState === 'knockdown') {
     ctx.save();

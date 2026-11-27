@@ -120,6 +120,8 @@ export type EnemyAIState =
   | 'spinAttack'
   | 'skateWindup'
   | 'skateDash'
+  | 'seatApproach'
+  | 'seatRest'
   | 'cooldown'
   | 'hurt'
   | 'knockdown'
@@ -170,6 +172,13 @@ export type EnemyTacticalRole =
   | 'flank'
   | 'recover'
   | 'reposition';
+
+export type BossMotoristaAttackKind =
+  | 'volante_turbo'
+  | 'buzina'
+  | 'acelerada'
+  | 'freada_brusca'
+  | 'melee';
 
 export interface EnemyEntity {
   id: number;
@@ -223,6 +232,19 @@ export interface EnemyEntity {
   subModeFlag?: boolean;
   recoverDirX?: number;
   recoverDirY?: number;
+  bossAttackMode?: BossMotoristaAttackKind;
+  bossLastAttack?: BossMotoristaAttackKind;
+  bossRepeatCount?: number;
+  bossDashDir?: 1 | -1;
+  bossDashHitDone?: boolean;
+  bossSpeechCooldown?: number;
+  bossWindupProg?: number;
+  bossSeatTargetX?: number;
+  bossSeatSlot?: number;
+  bossSeatTimer?: number;
+  bossSeatCooldown?: number;
+  bossNoHitTimer?: number;
+  bossHealAccum?: number;
 }
 
 export interface DropItem {

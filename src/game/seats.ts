@@ -76,3 +76,45 @@ export function findBusSeatAtX(
   }
   return null;
 }
+
+export function findOpenBusSeatInRange(
+  lineNumber: 1 | 2 | 3,
+  minX: number,
+  maxX: number,
+  turnstileX: number,
+  preferFromX?: number,
+  usedSeatSlots?: Set<number>
+): SeatSlotInfo | null {
+  const tier1: SeatSlotInfo[] = [];
+  const tier2: SeatSlotInfo[] = [];
+  const tier3: SeatSlotInfo[] = [];
+
+  for (let slot = 0; slot < 80; slot++) {
+    const seat = getBusSeatInfoAtSlot(lineNumber, slot, turnstileX);
+    if (!seat) break;
+    if (seat.centerX < minX || seat.centerX > maxX) continue;
+
+    if (!seat.occupied && (!usedSeatSlots || !usedSeatSlots.has(seat.slot))) {
+      tier1.push(seat);
+    } else if (!seat.occupied) {
+      tier2.push(seat);
+    } else {
+      tier3.push(seat);
+    }
+  }
+
+  const pool = tier1.length > 0 ? tier1 : tier2.length > 0 ? tier2 : tier3;
+  if (pool.length === 0) return null;
+
+  if (preferFromX === undefined) return pool[0];
+  let best = pool[0];
+  let bestDist = Math.abs(pool[0].centerX - preferFromX);
+  for (let i = 1; i < pool.length; i++) {
+    const d = Math.abs(pool[i].centerX - preferFromX);
+    if (d < bestDist) {
+      best = pool[i];
+      bestDist = d;
+    }
+  }
+  return best;
+}

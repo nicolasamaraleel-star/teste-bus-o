@@ -21,7 +21,7 @@ import {
   RENDER_SCALE,
 } from './levels';
 import { DitherPostProcessor } from './postProcessShader';
-import { findBusSeatAtX, SeatSlotInfo } from './seats';
+import { findBusSeatAtX, findOpenBusSeatInRange, SeatSlotInfo } from './seats';
 import { getActiveShopLoadout } from './shop';
 import {
   drawBossFinisherEffect,
@@ -41,6 +41,7 @@ import {
   AchievementUnlockNotice,
   BossFinisherKind,
   BossHudInfo,
+  BossMotoristaAttackKind,
   DropItem,
   EnemyEntity,
   EnemyType,
@@ -1031,6 +1032,7 @@ export class BusBeatEmUpEngine {
       }
 
       e.hp -= damage;
+      this.markEnemyHitByPlayer(e);
       e.hitFlashTimer = 0.18;
       e.aiState = 'hurt';
       e.stateTimer = 0.52;
@@ -1181,6 +1183,7 @@ export class BusBeatEmUpEngine {
       if (e.hp <= 0) continue;
       if (Math.abs(e.x - this.line.stopCordX) < 200) {
         e.hp -= 12;
+        this.markEnemyHitByPlayer(e);
         e.hitFlashTimer = 0.18;
         e.aiState = 'hurt';
         e.stateTimer = 0.72;
@@ -1552,7 +1555,7 @@ export class BusBeatEmUpEngine {
       estudante: 'Olha o SENAI!',
       tio_audio: 'AUMENTA O SOM AÍ!',
       skatista: 'SAI DA FRENTE!',
-      boss_motorista: 'DESCE PELA TRASEIRA!!',
+      boss_motorista: 'DESCE PELA TRASEIRA!',
     };
     const st = stats[type];
     const rawSpeech = !isChaser ? initialSpeech[type] ?? '' : '';
@@ -1622,6 +1625,13 @@ export class BusBeatEmUpEngine {
       subModeFlag: false,
       recoverDirX: 0,
       recoverDirY: 0,
+      bossSpeechCooldown: type === 'boss_motorista' ? 1.8 : 0,
+      bossRepeatCount: 0,
+      bossDashHitDone: false,
+      bossWindupProg: 0,
+      bossSeatCooldown: st.boss ? 2.5 : 0,
+      bossNoHitTimer: 0,
+      bossHealAccum: 0,
     };
 
     this.enemies.push(enemy);
@@ -3003,6 +3013,7 @@ export class BusBeatEmUpEngine {
             e.vx = kbDir * 95;
             e.hitFlashTimer = 0.16;
             e.hp -= Math.max(4, Math.round(damage * 0.8));
+            this.markEnemyHitByPlayer(e);
             hitCount++;
             cleanHitCount++;
             landedStrongHit = true;
@@ -3064,6 +3075,7 @@ export class BusBeatEmUpEngine {
       }
 
       e.hp -= effectiveDamage;
+      this.markEnemyHitByPlayer(e);
       e.hitFlashTimer = isHeavyPunch ? 0.18 : 0.14;
       e.aiState = 'hurt';
       e.heavyHurtTimer =
@@ -3489,11 +3501,171 @@ export class BusBeatEmUpEngine {
     this.pushHudSnapshot();
   }
 
+  private markEnemyHitByPlayer(e: EnemyEntity) {
+    e.bossNoHitTimer = 0;
+    if (e.aiState === 'seatApproach' || e.aiState === 'seatRest') {
+      e.bossSeatCooldown = Math.max(e.bossSeatCooldown ?? 0, 8.5);
+      e.bossSeatTimer = 0;
+      e.bossHealAccum = 0;
+    }
+  }
+
+  private getMotoristaRecoveryTiming(
+    mode: BossMotoristaAttackKind,
+    cooldownMult: number
+  ): { stateTimer: number; attackCooldown: number } {
+    // Variable recovery windows around balanced means so cadence feels organic without inflating difficulty
+    if (mode === 'volante_turbo') {
+      return {
+        stateTimer: (0.76 + Math.random() * 0.24) * cooldownMult,
+        attackCooldown: (2.12 + Math.random() * 0.56) * cooldownMult,
+      };
+    }
+    if (mode === 'acelerada') {
+      return {
+        stateTimer: (0.7 + Math.random() * 0.24) * cooldownMult,
+        attackCooldown: (1.65 + Math.random() * 0.52) * cooldownMult,
+      };
+    }
+    if (mode === 'freada_brusca') {
+      return {
+        stateTimer: (0.64 + Math.random() * 0.24) * cooldownMult,
+        attackCooldown: (1.55 + Math.random() * 0.5) * cooldownMult,
+      };
+    }
+    if (mode === 'buzina') {
+      return {
+        stateTimer: (0.48 + Math.random() * 0.22) * cooldownMult,
+        attackCooldown: (1.28 + Math.random() * 0.46) * cooldownMult,
+      };
+    }
+    return {
+      stateTimer: (0.5 + Math.random() * 0.2) * cooldownMult,
+      attackCooldown: (1.2 + Math.random() * 0.42) * cooldownMult,
+    };
+  }
+
+  private sayBossMotoristaLine(
+    e: EnemyEntity,
+    text: string,
+    duration = 1.15,
+    force = false
+  ) {
+    if (e.type !== 'boss_motorista') return;
+    if (!force && ((e.bossSpeechCooldown ?? 0) > 0 || e.speechTimer > 0.15)) {
+      return;
+    }
+    e.speechText = text;
+    e.speechTimer = duration;
+    e.speechPriority = 'combat';
+    e.bossSpeechCooldown = 3.8;
+  }
+
+  private pickMotoristaAttack(
+    e: EnemyEntity,
+    absDx: number,
+    absDy: number,
+    dx: number,
+    minBoundX: number,
+    maxBoundX: number
+  ): BossMotoristaAttackKind | null {
+    const p = this.player;
+    const isEnraged = e.hp <= e.maxHp * 0.5;
+    const playerAirborne = p.z > 10;
+    const dashDir: 1 | -1 = dx >= 0 ? 1 : -1;
+    const dashRoom = dashDir > 0 ? maxBoundX - e.x : e.x - minBoundX;
+    const canDash = dashRoom >= 62;
+    const playerBusy =
+      p.anim !== 'idle' && p.anim !== 'walk' && p.anim !== 'jump' && p.anim !== 'hurt';
+
+    const candidates: Array<{ kind: BossMotoristaAttackKind; weight: number }> = [];
+
+    // 1. Freada Brusca: localized close-range ground shockwave (dodge/jump friendly, downweighted if player already airborne)
+    if (absDx <= 58 && absDy <= 28) {
+      candidates.push({
+        kind: 'freada_brusca',
+        weight: playerAirborne ? 0.35 : isEnraged ? 3.2 : 2.7,
+      });
+    }
+
+    // 2. Quick Steering-Wheel Melee: tight close-range punisher
+    if (absDx <= 40 && absDy <= 18) {
+      candidates.push({
+        kind: 'melee',
+        weight: playerBusy ? 1.85 : 1.4,
+      });
+    }
+
+    // 3. Volante Turbo: distinct spinning wheel chase at close-to-mid range
+    if (absDx <= 155 && absDy <= 42) {
+      candidates.push({
+        kind: 'volante_turbo',
+        weight: absDx <= 74 ? 2.1 : isEnraged ? 2.6 : 2.0,
+      });
+    }
+
+    // 4. Acelerada: locked-direction horizontal dash when aligned in mid-to-long range with runway space
+    if (canDash && absDx >= 52 && absDx <= 205 && absDy <= 26) {
+      candidates.push({
+        kind: 'acelerada',
+        weight: isEnraged ? 3.1 : 2.5,
+      });
+    }
+
+    // 5. Buzina: sonic projectile wave when player keeps distance or jumps/approaches in lane
+    if (absDx >= 64 && absDx <= 235 && absDy <= 34) {
+      candidates.push({
+        kind: 'buzina',
+        weight: absDx > 125 || playerAirborne ? 3.0 : isEnraged ? 2.35 : 2.1,
+      });
+    }
+
+    if (candidates.length === 0) return null;
+
+    // Strict non-repeat rule: never repeat the exact same attack consecutively
+    const last = e.bossLastAttack;
+    let pool = last ? candidates.filter((c) => c.kind !== last) : candidates;
+    if (pool.length === 0) return null;
+
+    // Below 50% HP: stronger pattern contrast across attack families without inflating difficulty
+    if (isEnraged && last && pool.length > 1) {
+      pool = pool.map((c) => {
+        const differentFamily =
+          (last === 'buzina' && (c.kind === 'acelerada' || c.kind === 'freada_brusca')) ||
+          (last === 'acelerada' && (c.kind === 'freada_brusca' || c.kind === 'buzina')) ||
+          (last === 'freada_brusca' && (c.kind === 'volante_turbo' || c.kind === 'buzina')) ||
+          (last === 'volante_turbo' && (c.kind === 'buzina' || c.kind === 'acelerada')) ||
+          (last === 'melee' && (c.kind === 'acelerada' || c.kind === 'volante_turbo'));
+        return { kind: c.kind, weight: c.weight * (differentFamily ? 1.75 : 0.75) };
+      });
+    }
+
+    let total = 0;
+    for (const item of pool) total += item.weight;
+    let roll = Math.random() * total;
+    for (const item of pool) {
+      roll -= item.weight;
+      if (roll <= 0) return item.kind;
+    }
+    return pool[0].kind;
+  }
+
   private checkBossHalfHpTaunt(e: EnemyEntity) {
     if (!e.isBoss || e.halfHpTauntTriggered || e.hp <= 0 || e.hp > e.maxHp * 0.5) {
       return;
     }
     e.halfHpTauntTriggered = true;
+    if (e.type === 'boss_motorista') {
+      const driverLines = ['AQUI NÃO É PONTO!', 'PERDEU A VIAGEM!'];
+      this.sayBossMotoristaLine(
+        e,
+        driverLines[Math.floor(Math.random() * driverLines.length)],
+        2.4,
+        true
+      );
+      this.spawnParticles(e.x, e.y, 24, '#facc15', 8);
+      return;
+    }
     const taunts = [
       'SEU COTOVELO TÁ NA MINHA COSTELA!',
       'NÃO CABE NEM UMA SARDINHA AQUI!',
@@ -4432,6 +4604,33 @@ export class BusBeatEmUpEngine {
     const chosenPrep1 = openMeleeSlots === 0 ? attacker1Id : openMeleeSlots === 1 ? attacker2Id : prep1Id;
     const chosenPrep2 = openMeleeSlots === 0 ? attacker2Id : openMeleeSlots === 1 ? prep1Id : prep2Id;
 
+    // Track active bosses for double-boss seat recovery coordination
+    let activeBossCount = 0;
+    let restingBossId = -1;
+    let attackingBossId = -1;
+    for (const b of this.enemies) {
+      if (
+        !b.isBoss ||
+        b.hp <= 0 ||
+        b.aiState === 'knockdown' ||
+        b.aiState === 'finisherVictim'
+      ) {
+        continue;
+      }
+      activeBossCount++;
+      if (b.aiState === 'seatApproach' || b.aiState === 'seatRest') {
+        restingBossId = b.id;
+      }
+      if (
+        b.aiState === 'windup' ||
+        b.aiState === 'attack' ||
+        b.aiState === 'spinWindup' ||
+        b.aiState === 'spinAttack'
+      ) {
+        attackingBossId = b.id;
+      }
+    }
+
     for (let i = this.enemies.length - 1; i >= 0; i--) {
       const e = this.enemies[i];
       if (e.aiState === 'finisherVictim') {
@@ -4493,6 +4692,15 @@ export class BusBeatEmUpEngine {
       }
       if (e.hitFlashTimer > 0) e.hitFlashTimer = Math.max(0, e.hitFlashTimer - dt);
       if (e.speechTimer > 0) e.speechTimer = Math.max(0, e.speechTimer - dt);
+      if (e.bossSpeechCooldown && e.bossSpeechCooldown > 0) {
+        e.bossSpeechCooldown = Math.max(0, e.bossSpeechCooldown - dt);
+      }
+      if (e.isBoss) {
+        e.bossNoHitTimer = (e.bossNoHitTimer ?? 0) + dt;
+        if (e.bossSeatCooldown && e.bossSeatCooldown > 0) {
+          e.bossSeatCooldown = Math.max(0, e.bossSeatCooldown - dt);
+        }
+      }
       if (e.attackCooldown > 0) e.attackCooldown = Math.max(0, e.attackCooldown - dt);
       if (e.flankSwitchLockTimer && e.flankSwitchLockTimer > 0) {
         e.flankSwitchLockTimer = Math.max(0, e.flankSwitchLockTimer - dt);
@@ -4505,10 +4713,19 @@ export class BusBeatEmUpEngine {
           e.aiState === 'skateWindup' ||
           e.aiState === 'attack' ||
           e.aiState === 'spinAttack' ||
-          e.aiState === 'skateDash'
+          e.aiState === 'skateDash' ||
+          e.aiState === 'seatApproach' ||
+          e.aiState === 'seatRest'
         ) {
+          if (e.aiState === 'seatRest') {
+            e.z = 0;
+            e.y = Math.max(AISLE_MIN_Y + 4, e.y);
+          }
           e.aiState = 'approach';
           e.activeAttackKind = undefined;
+          e.bossAttackMode = undefined;
+          e.bossDashHitDone = false;
+          e.bossWindupProg = 0;
           e.stateTimer = 0;
         }
       }
@@ -4541,6 +4758,9 @@ export class BusBeatEmUpEngine {
 
       if (e.aiState === 'hurt') {
         e.activeAttackKind = undefined;
+        e.bossAttackMode = undefined;
+        e.bossDashHitDone = false;
+        e.bossWindupProg = 0;
         e.stateTimer -= dt;
         e.x += e.vx * dt;
         e.vx *= Math.pow(0.04, dt);
@@ -4597,11 +4817,24 @@ export class BusBeatEmUpEngine {
         }
       } else if (e.aiState === 'spinWindup') {
         e.stateTimer -= dt;
+        if (e.type === 'boss_motorista') {
+          const totalWindup = Math.max(0.01, 0.65 * diff.windupMult);
+          e.bossWindupProg = Math.max(0, Math.min(1, 1 - e.stateTimer / totalWindup));
+          if (e.hp <= e.maxHp * 0.5 && Math.random() < dt * 11) {
+            this.spawnParticles(e.x, e.y, 26, Math.random() < 0.5 ? '#facc15' : '#38bdf8', 1);
+          }
+        }
         if (e.stateTimer <= 0) {
           e.aiState = 'spinAttack';
           e.stateTimer = 1.6;
           e.spinTickTimer = 0.05;
-          audio.playTurnstileSpin();
+          if (e.type === 'boss_motorista') {
+            e.bossAttackMode = 'volante_turbo';
+            e.bossWindupProg = 1;
+            audio.playMotoristaTurboSpin();
+          } else {
+            audio.playTurnstileSpin();
+          }
         }
       } else if (e.aiState === 'spinAttack') {
         e.stateTimer -= dt;
@@ -4624,23 +4857,81 @@ export class BusBeatEmUpEngine {
 
         if (e.stateTimer <= 0) {
           e.aiState = 'cooldown';
-          e.stateTimer = 0.85 * diff.cooldownMult;
-          e.attackCooldown = 2.4 * diff.cooldownMult;
+          if (e.type === 'boss_motorista') {
+            const rec = this.getMotoristaRecoveryTiming('volante_turbo', diff.cooldownMult);
+            e.stateTimer = rec.stateTimer;
+            e.attackCooldown = rec.attackCooldown;
+          } else {
+            e.stateTimer = 0.85 * diff.cooldownMult;
+            e.attackCooldown = 2.4 * diff.cooldownMult;
+          }
         }
       } else if (e.aiState === 'windup') {
         e.stateTimer -= dt;
+        if (e.type === 'boss_motorista') {
+          const baseW =
+            e.bossAttackMode === 'freada_brusca'
+              ? 0.56
+              : e.bossAttackMode === 'acelerada'
+                ? 0.52
+                : 0.42;
+          const totalW = Math.max(0.01, baseW * diff.windupMult);
+          e.bossWindupProg = Math.max(0, Math.min(1, 1 - e.stateTimer / totalW));
+          if (e.hp <= e.maxHp * 0.5 && Math.random() < dt * 10) {
+            this.spawnParticles(e.x, e.y, 24, '#f97316', 1);
+          }
+        }
         if (e.stateTimer <= 0) {
-          e.aiState = 'attack';
-          e.stateTimer = 0.24;
-          this.executeEnemyAttack(e);
+          if (e.type === 'boss_motorista' && e.bossAttackMode === 'acelerada') {
+            e.aiState = 'attack';
+            e.stateTimer = 0.42;
+            e.bossDashHitDone = false;
+            e.bossWindupProg = 1;
+            audio.playMotoristaAccelerate();
+            this.spawnParticles(e.x - (e.bossDashDir ?? e.facing) * 8, e.y, 4, '#facc15', 5);
+          } else if (e.type === 'boss_motorista' && e.bossAttackMode === 'freada_brusca') {
+            e.aiState = 'attack';
+            e.stateTimer = 0.28;
+            e.bossWindupProg = 1;
+            this.executeEnemyAttack(e);
+          } else {
+            e.aiState = 'attack';
+            e.stateTimer = 0.24;
+            this.executeEnemyAttack(e);
+          }
         }
       } else if (e.aiState === 'attack') {
         e.stateTimer -= dt;
+        if (e.type === 'boss_motorista' && e.bossAttackMode === 'acelerada') {
+          const dashDir: 1 | -1 = e.bossDashDir ?? e.facing;
+          e.facing = dashDir;
+          const nextX = e.x + dashDir * 215 * diff.speedMult * dt;
+          e.x = Math.max(minBoundX, Math.min(maxBoundX, nextX));
+          if (
+            !e.bossDashHitDone &&
+            Math.abs(p.x - e.x) < 28 &&
+            Math.abs(p.y - e.y) < 16 &&
+            p.z < 20
+          ) {
+            e.bossDashHitDone = true;
+            this.damagePlayer(12);
+            p.vx = dashDir * 145;
+          }
+        }
         if (e.stateTimer <= 0) {
           e.aiState = 'cooldown';
           e.activeAttackKind = undefined;
-          e.stateTimer = 0.45 * diff.cooldownMult;
-          e.attackCooldown = (e.type === 'patricinha' ? 0.85 : 1.15) * diff.cooldownMult;
+          if (e.type === 'boss_motorista') {
+            const rec = this.getMotoristaRecoveryTiming(
+              e.bossAttackMode ?? 'melee',
+              diff.cooldownMult
+            );
+            e.stateTimer = rec.stateTimer;
+            e.attackCooldown = rec.attackCooldown;
+          } else {
+            e.stateTimer = 0.45 * diff.cooldownMult;
+            e.attackCooldown = (e.type === 'patricinha' ? 0.85 : 1.15) * diff.cooldownMult;
+          }
           if (!e.isBoss) {
             if (e.type === 'patricinha') {
               e.tacticalRole = 'recover';
@@ -4664,6 +4955,77 @@ export class BusBeatEmUpEngine {
             }
           }
         }
+      } else if (e.aiState === 'seatApproach') {
+        // Double-boss: walk to open bus seat while partner attacks; abort immediately if partner stops/falls or hit
+        const partnerStillActive = activeBossCount >= 2;
+        if (!partnerStillActive || finisherActive || (e.bossNoHitTimer ?? 0) < 1.5) {
+          e.aiState = 'approach';
+          e.bossSeatCooldown = 5.0;
+          if (restingBossId === e.id) restingBossId = -1;
+        } else {
+          const seatX = e.bossSeatTargetX ?? e.x;
+          const seatY = AISLE_MIN_Y;
+          const sdx = seatX - e.x;
+          const sdy = seatY - e.y;
+          const baseSeatSpd =
+            e.type === 'boss_fiscal_chefe'
+              ? 96
+              : e.type === 'boss_motorista'
+                ? 82
+                : 72;
+          const seatSpd = baseSeatSpd * diff.speedMult;
+          e.facing = Math.abs(sdx) > 3 ? (sdx >= 0 ? 1 : -1) : dx >= 0 ? 1 : -1;
+          e.walkPhase += dt * 0.9;
+          if (Math.abs(sdx) > 4) {
+            e.x += Math.sign(sdx) * Math.min(Math.abs(sdx), seatSpd * dt);
+          }
+          if (Math.abs(sdy) > 3) {
+            e.y += Math.sign(sdy) * Math.min(Math.abs(sdy), seatSpd * 0.78 * dt);
+          }
+          if (Math.abs(sdx) <= 6 && Math.abs(sdy) <= 5) {
+            e.x = seatX;
+            e.y = AISLE_MIN_Y;
+            e.z = 22;
+            e.aiState = 'seatRest';
+            e.bossSeatTimer = 0;
+            e.bossHealAccum = 0;
+            e.facing = dx >= 0 ? 1 : -1;
+          }
+        }
+      } else if (e.aiState === 'seatRest') {
+        // Recover HP while seated as long as partner is fighting & player does not attack this boss
+        e.bossSeatTimer = (e.bossSeatTimer ?? 0) + dt;
+        e.facing = dx >= 0 ? 1 : -1;
+        e.y = AISLE_MIN_Y;
+        e.z = 22;
+        const canContinueResting =
+          activeBossCount >= 2 &&
+          !finisherActive &&
+          (e.bossNoHitTimer ?? 0) >= 1.5 &&
+          e.hp < e.maxHp * 0.94 &&
+          e.bossSeatTimer < 6.5;
+
+        if (!canContinueResting) {
+          e.z = 0;
+          e.y = AISLE_MIN_Y + 4;
+          e.aiState = 'approach';
+          e.bossSeatCooldown = 10.0;
+          e.attackCooldown = Math.max(e.attackCooldown, 0.85 * diff.cooldownMult);
+          if (restingBossId === e.id) restingBossId = -1;
+        } else {
+          e.bossHealAccum = (e.bossHealAccum ?? 0) + 6.5 * dt;
+          if (e.bossHealAccum >= 2) {
+            const rawHeal = Math.floor(e.bossHealAccum);
+            const gain = Math.min(rawHeal, e.maxHp - e.hp);
+            e.bossHealAccum -= rawHeal;
+            if (gain > 0) {
+              e.hp += gain;
+              this.addFloatingText(`+${gain}`, e.x, e.y, e.z + 36, '#34d399');
+              this.spawnParticles(e.x, e.y, e.z + 18, '#34d399', 4);
+              this.pushHudSnapshot();
+            }
+          }
+        }
       } else if (e.aiState === 'cooldown') {
         e.activeAttackKind = undefined;
         e.stateTimer -= dt;
@@ -4679,6 +5041,11 @@ export class BusBeatEmUpEngine {
         }
         if (e.stateTimer <= 0) {
           e.aiState = 'approach';
+          if (e.type === 'boss_motorista') {
+            e.bossAttackMode = undefined;
+            e.bossDashHitDone = false;
+            e.bossWindupProg = 0;
+          }
         }
       } else if (finisherActive) {
         e.facing = dx >= 0 ? 1 : -1;
@@ -4721,51 +5088,135 @@ export class BusBeatEmUpEngine {
           speedVar;
 
         if (e.isBoss) {
-          // Preserve bosses untouched
           e.walkPhase += dt * (0.62 + 0.38 * armorSpeedMult);
+          const otherBossAttacking = attackingBossId !== -1 && attackingBossId !== e.id;
           if (
-            (e.type === 'boss_cobrador' || e.type === 'boss_cobrador_blindado' || e.type === 'boss_motorista') &&
-            e.attackCooldown <= 0 &&
-            absDx < 145 &&
-            Math.random() < 0.55
+            activeBossCount >= 2 &&
+            restingBossId === -1 &&
+            otherBossAttacking &&
+            e.hp < e.maxHp * 0.85 &&
+            (e.bossNoHitTimer ?? 0) >= 2.2 &&
+            (e.bossSeatCooldown ?? 0) <= 0
           ) {
-            e.aiState = 'spinWindup';
-            e.stateTimer = 0.65 * diff.windupMult;
-            e.speechText = e.type === 'boss_motorista' ? 'VOLANTE TURBO!' : 'ROLETA GIRATÓRIA!';
-            e.speechTimer = 1.2;
-            e.speechPriority = 'combat';
-          } else if (
-            e.type === 'boss_fiscal_chefe' &&
-            e.attackCooldown <= 0 &&
-            absDx > 80 &&
-            absDx < 200
-          ) {
-            e.aiState = 'windup';
-            e.stateTimer = 0.4 * diff.windupMult;
-            e.speechText = 'CADÊ O BILHETE?!';
-            e.speechTimer = 1.1;
-            e.speechPriority = 'combat';
-          } else if (
-            e.type === 'boss_motorista' &&
-            e.attackCooldown <= 0 &&
-            absDx > 65 &&
-            absDx < 205
-          ) {
-            e.aiState = 'windup';
-            e.stateTimer = 0.42 * diff.windupMult;
-            e.speechText = 'BUZINA NA ORELHA!';
-            e.speechTimer = 1.1;
-            e.speechPriority = 'combat';
-          } else {
-            if (absDx > 28) {
-              e.x += Math.sign(dx) * speed * dt;
+            const seat =
+              findOpenBusSeatInRange(
+                this.line.lineNumber,
+                minBoundX + 16,
+                Math.min(maxBoundX - 16, this.line.turnstileX - 24),
+                this.line.turnstileX,
+                e.x,
+                this.usedSeatSlots
+              ) ??
+              findOpenBusSeatInRange(
+                this.line.lineNumber,
+                minBoundX + 16,
+                maxBoundX - 16,
+                this.line.turnstileX,
+                e.x,
+                this.usedSeatSlots
+              );
+            if (seat) {
+              e.aiState = 'seatApproach';
+              e.bossSeatTargetX = seat.centerX;
+              e.bossSeatSlot = seat.slot;
+              e.bossSeatTimer = 0;
+              e.bossAttackMode = undefined;
+              e.bossWindupProg = 0;
+              restingBossId = e.id;
+              if (e.type === 'boss_motorista') {
+                this.sayBossMotoristaLine(e, 'AQUI NÃO É PONTO!', 1.2);
+              } else {
+                e.speechText = 'SEGURA ELE AÍ!';
+                e.speechTimer = 1.2;
+                e.speechPriority = 'combat';
+              }
             }
-            if (absDy > 8) {
-              e.y += Math.sign(dy) * speed * 0.68 * dt;
-            }
-            if (absDx <= 34 && absDy <= 15 && e.attackCooldown <= 0) {
-              e.aiState = 'windup';
-              e.stateTimer = 0.44 * diff.windupMult;
+          }
+          if (e.aiState !== 'seatApproach') {
+            if (e.type === 'boss_motorista') {
+              const chosenAttack =
+                e.attackCooldown <= 0
+                  ? this.pickMotoristaAttack(e, absDx, absDy, dx, minBoundX, maxBoundX)
+                  : null;
+              if (chosenAttack) {
+                e.bossRepeatCount =
+                  e.bossLastAttack === chosenAttack ? (e.bossRepeatCount ?? 0) + 1 : 1;
+                e.bossLastAttack = chosenAttack;
+                e.bossAttackMode = chosenAttack;
+                e.bossWindupProg = 0;
+
+                if (chosenAttack === 'volante_turbo') {
+                  e.aiState = 'spinWindup';
+                  e.stateTimer = 0.65 * diff.windupMult;
+                  this.sayBossMotoristaLine(e, 'PERDEU A VIAGEM!', 1.2);
+                } else if (chosenAttack === 'buzina') {
+                  e.aiState = 'windup';
+                  e.stateTimer = 0.44 * diff.windupMult;
+                  audio.playMotoristaHornAnticipate();
+                  this.sayBossMotoristaLine(e, 'AQUI NÃO É PONTO!', 1.15);
+                } else if (chosenAttack === 'acelerada') {
+                  const lockedDir: 1 | -1 = dx >= 0 ? 1 : -1;
+                  e.facing = lockedDir;
+                  e.bossDashDir = lockedDir;
+                  e.bossDashHitDone = false;
+                  e.aiState = 'windup';
+                  e.stateTimer = 0.52 * diff.windupMult;
+                  this.sayBossMotoristaLine(e, 'SEGURA QUE LÁ VEM!', 1.15);
+                } else if (chosenAttack === 'freada_brusca') {
+                  e.aiState = 'windup';
+                  e.stateTimer = 0.56 * diff.windupMult;
+                  this.sayBossMotoristaLine(e, 'SEGURA ESSA FREADA!', 1.2);
+                } else {
+                  e.aiState = 'windup';
+                  e.stateTimer = 0.42 * diff.windupMult;
+                  if (e.hp <= e.maxHp * 0.5) {
+                    this.sayBossMotoristaLine(e, 'DESCE PELA TRASEIRA!', 1.1);
+                  }
+                }
+              } else {
+                if (absDx > 28) {
+                  e.x += Math.sign(dx) * speed * dt;
+                }
+                if (absDy > 8) {
+                  e.y += Math.sign(dy) * speed * 0.68 * dt;
+                }
+              }
+            } else {
+              // Preserve other bosses untouched
+              if (
+                (e.type === 'boss_cobrador' || e.type === 'boss_cobrador_blindado') &&
+                e.attackCooldown <= 0 &&
+                absDx < 145 &&
+                Math.random() < 0.55
+              ) {
+                e.aiState = 'spinWindup';
+                e.stateTimer = 0.65 * diff.windupMult;
+                e.speechText = 'ROLETA GIRATÓRIA!';
+                e.speechTimer = 1.2;
+                e.speechPriority = 'combat';
+              } else if (
+                e.type === 'boss_fiscal_chefe' &&
+                e.attackCooldown <= 0 &&
+                absDx > 80 &&
+                absDx < 200
+              ) {
+                e.aiState = 'windup';
+                e.stateTimer = 0.4 * diff.windupMult;
+                e.speechText = 'CADÊ O BILHETE?!';
+                e.speechTimer = 1.1;
+                e.speechPriority = 'combat';
+              } else {
+                if (absDx > 28) {
+                  e.x += Math.sign(dx) * speed * dt;
+                }
+                if (absDy > 8) {
+                  e.y += Math.sign(dy) * speed * 0.68 * dt;
+                }
+                if (absDx <= 34 && absDy <= 15 && e.attackCooldown <= 0) {
+                  e.aiState = 'windup';
+                  e.stateTimer = 0.44 * diff.windupMult;
+                }
+              }
             }
           }
         } else {
@@ -5077,7 +5528,7 @@ export class BusBeatEmUpEngine {
         }
       }
 
-      if (e.z > 0 || e.vz !== 0) {
+      if (e.aiState !== 'seatRest' && (e.z > 0 || e.vz !== 0)) {
         e.z += e.vz * dt;
         e.vz -= GRAVITY * dt;
         if (e.z <= 0) {
@@ -5225,23 +5676,39 @@ export class BusBeatEmUpEngine {
       return;
     }
 
-    if (e.type === 'boss_motorista' && Math.abs(dx) > 54) {
-      audio.playSoundWave();
-      this.projectiles.push({
-        id: this.nextId++,
-        kind: 'sound_ring',
-        fromPlayer: false,
-        x: e.x + e.facing * 14,
-        y: e.y,
-        z: 22,
-        vx: e.facing * 180,
-        vy: 0,
-        vz: 0,
-        damage: 11,
-        life: 1.25,
-        radius: 17,
-      });
-      return;
+    if (e.type === 'boss_motorista') {
+      if (e.bossAttackMode === 'freada_brusca') {
+        audio.playMotoristaStomp();
+        this.spawnGroundShockwave(e.x, e.y, 56, '#facc15', true);
+        this.spawnGroundShockwave(e.x, e.y, 38, '#fb923c', false);
+        if (!this.isReducedMotionPreferred()) {
+          this.triggerShake(0.16, 3.8);
+        }
+        const stompDist = Math.hypot(p.x - e.x, (p.y - e.y) * 1.45);
+        if (stompDist <= 52 && p.z < 14) {
+          this.damagePlayer(12);
+          p.vx = (p.x >= e.x ? 1 : -1) * 130;
+        }
+        return;
+      }
+      if (e.bossAttackMode === 'buzina' || Math.abs(dx) > 54) {
+        audio.playSoundWave();
+        this.projectiles.push({
+          id: this.nextId++,
+          kind: 'sound_ring',
+          fromPlayer: false,
+          x: e.x + e.facing * 14,
+          y: e.y,
+          z: 22,
+          vx: e.facing * 180,
+          vy: 0,
+          vz: 0,
+          damage: 11,
+          life: 1.25,
+          radius: 17,
+        });
+        return;
+      }
     }
 
     if ((e.type === 'fiscal' || e.type === 'boss_fiscal_chefe') && Math.abs(dx) > 52) {
@@ -5336,6 +5803,7 @@ export class BusBeatEmUpEngine {
               e.stinkActive = false;
             }
             e.hp -= pr.damage;
+            this.markEnemyHitByPlayer(e);
             e.hitFlashTimer = 0.16;
             e.aiState = 'hurt';
             e.stateTimer = 0.36;
@@ -5867,7 +6335,11 @@ export class BusBeatEmUpEngine {
             e.finisherKind,
             e.finisherProg ?? 0,
             e.finisherPhaseAngle ?? 0,
-            e.isBoss ? 1 : (e.renderAlpha ?? 1)
+            e.isBoss ? 1 : (e.renderAlpha ?? 1),
+            e.type === 'boss_motorista' ? e.bossAttackMode : undefined,
+            e.type === 'boss_motorista' ? (e.bossWindupProg ?? 0) : 0,
+            e.type === 'boss_motorista' && e.hp <= e.maxHp * 0.5,
+            this.isReducedMotionPreferred()
           );
           if (!e.isBoss && e.aiState !== 'finisherVictim' && (e.hp < e.maxHp || e.guardMax > 0)) {
             const bw = 26;
